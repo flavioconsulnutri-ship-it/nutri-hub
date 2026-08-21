@@ -37,7 +37,7 @@ const nav = [
   { to: "/configuracoes", label: "Configurações", icon: Settings },
 ] as const;
 
-function NavList({ onNavigate }: { onNavigate?: () => void }) {
+function NavList({ onNavigate }: { onNavigate?: (() => void) | undefined }) {
   return (
     <nav className="flex flex-col gap-0.5 px-2">
       {nav.map((item) => (
