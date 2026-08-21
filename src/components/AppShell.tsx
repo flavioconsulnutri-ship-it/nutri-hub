@@ -59,7 +59,7 @@ function NavList({ onNavigate }: { onNavigate?: (() => void) | undefined }) {
   );
 }
 
-function SidebarBody({ onNavigate }: { onNavigate?: () => void }) {
+function SidebarBody({ onNavigate }: { onNavigate?: (() => void) | undefined }) {
   const { session, roles } = useSession();
   const router = useRouter();
   const queryClient = useQueryClient();
