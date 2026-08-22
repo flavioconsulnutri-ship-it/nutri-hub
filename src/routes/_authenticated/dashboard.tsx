@@ -197,9 +197,9 @@ function Metric({
 }: {
   label: string;
   value: string;
-  hint?: string;
-  to?: "/comercial" | "/financeiro" | "/pacientes" | "/agenda" | "/relatorios";
-  tone?: "positive" | "negative";
+  hint?: string | undefined;
+  to?: "/comercial" | "/financeiro" | "/pacientes" | "/agenda" | "/relatorios" | undefined;
+  tone?: "positive" | "negative" | undefined;
 }) {
   const body = (
     <div className="panel h-full px-5 py-4 transition-colors hover:border-ring/40">
