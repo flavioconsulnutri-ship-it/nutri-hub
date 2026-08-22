@@ -48,6 +48,27 @@ export type InstallmentPlan = {
   expected_amount: number;
 };
 
+export type SettlementMode = "integral" | "parcelado";
+
+/**
+ * Monta a agenda de repasse ao consultório. Ela é independente das parcelas
+ * cobradas do cliente: uma venda em 6x pode gerar um único repasse líquido.
+ */
+export function buildSettlement(params: {
+  amountCents: number;
+  customerInstallments: number;
+  mode: SettlementMode;
+  settlementDate: string;
+}): InstallmentPlan[] {
+  const count = params.mode === "parcelado" ? Math.max(1, params.customerInstallments) : 1;
+  return splitCents(Math.max(0, params.amountCents), count).map((cents, index) => ({
+    installment_number: index + 1,
+    installment_total: count,
+    due_date: addMonths(params.settlementDate, index),
+    expected_amount: fromCents(cents),
+  }));
+}
+
 /**
  * Monta as parcelas a receber.
  * - À vista (installments <= 1): uma parcela na data da venda.

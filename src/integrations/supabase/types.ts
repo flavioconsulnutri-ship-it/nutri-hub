@@ -1385,11 +1385,14 @@ export type Database = {
       }
       sales: {
         Row: {
+          anticipation_fee_percent: number
           cancelled: boolean
+          card_fee_percent: number
           created_at: string
           created_by: string | null
           discount_amount: number
           down_payment: number
+          expected_cash_amount: number
           gross_amount: number
           id: string
           installments: number
@@ -1401,15 +1404,21 @@ export type Database = {
           patient_id: string
           payment_method: Database["public"]["Enums"]["payment_method"]
           plan_id: string | null
+          processing_fee_amount: number
           sale_date: string
+          settlement_date: string | null
+          settlement_mode: string
           updated_at: string
         }
         Insert: {
+          anticipation_fee_percent?: number
           cancelled?: boolean
+          card_fee_percent?: number
           created_at?: string
           created_by?: string | null
           discount_amount?: number
           down_payment?: number
+          expected_cash_amount?: number
           gross_amount?: number
           id?: string
           installments?: number
@@ -1421,15 +1430,21 @@ export type Database = {
           patient_id: string
           payment_method?: Database["public"]["Enums"]["payment_method"]
           plan_id?: string | null
+          processing_fee_amount?: number
           sale_date?: string
+          settlement_date?: string | null
+          settlement_mode?: string
           updated_at?: string
         }
         Update: {
+          anticipation_fee_percent?: number
           cancelled?: boolean
+          card_fee_percent?: number
           created_at?: string
           created_by?: string | null
           discount_amount?: number
           down_payment?: number
+          expected_cash_amount?: number
           gross_amount?: number
           id?: string
           installments?: number
@@ -1441,7 +1456,10 @@ export type Database = {
           patient_id?: string
           payment_method?: Database["public"]["Enums"]["payment_method"]
           plan_id?: string | null
+          processing_fee_amount?: number
           sale_date?: string
+          settlement_date?: string | null
+          settlement_mode?: string
           updated_at?: string
         }
         Relationships: [

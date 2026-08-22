@@ -1388,6 +1388,10 @@ function CloseSaleDialog({
     discount: "0",
     installments: "1",
     down_payment: "0",
+    settlement_mode: "integral" as "integral" | "parcelado",
+    settlement_date: todayISO(),
+    card_fee_percent: "0",
+    anticipation_fee_percent: "0",
     is_renewal: false,
     notes: "",
   });
@@ -1408,6 +1412,10 @@ function CloseSaleDialog({
   const additionalDiscount = Number(form.discount || 0);
   const estimatedNet = Math.max(0, paymentConditionAmount - additionalDiscount);
   const totalDiscount = Math.max(0, grossAmount - estimatedNet);
+  const estimatedProcessingFee =
+    estimatedNet *
+    ((Number(form.card_fee_percent || 0) + Number(form.anticipation_fee_percent || 0)) / 100);
+  const estimatedCash = Math.max(0, estimatedNet - estimatedProcessingFee);
 
   const financialPreview = useQuery({
     queryKey: [
@@ -1418,6 +1426,10 @@ function CloseSaleDialog({
       form.discount,
       form.installments,
       form.down_payment,
+      form.settlement_mode,
+      form.settlement_date,
+      form.card_fee_percent,
+      form.anticipation_fee_percent,
     ],
     enabled: Boolean(form.plan_id && form.sale_date),
     queryFn: () =>
@@ -1429,6 +1441,10 @@ function CloseSaleDialog({
           discount: Number(form.discount || 0),
           installments: Number(form.installments || 1),
           downPayment: Number(form.down_payment || 0),
+          settlementMode: form.settlement_mode,
+          settlementDate: form.settlement_date,
+          cardFeePercent: Number(form.card_fee_percent || 0),
+          anticipationFeePercent: Number(form.anticipation_fee_percent || 0),
         },
       }),
     staleTime: 30_000,
@@ -1456,6 +1472,10 @@ function CloseSaleDialog({
           discount: Number(form.discount || 0),
           installments: Number(form.installments || 1),
           downPayment: Number(form.down_payment || 0),
+          settlementMode: form.settlement_mode,
+          settlementDate: form.settlement_date,
+          cardFeePercent: Number(form.card_fee_percent || 0),
+          anticipationFeePercent: Number(form.anticipation_fee_percent || 0),
           isRenewal: form.is_renewal,
           notes: form.notes.trim() || null,
         },
@@ -1484,6 +1504,9 @@ function CloseSaleDialog({
     if (!form.sale_date) return setFormError("Informe a data da venda.");
     if (Number(form.discount) < 0) return setFormError("O desconto não pode ser negativo.");
     if (Number(form.installments) < 1) return setFormError("Informe ao menos uma parcela.");
+    if (!form.settlement_date) return setFormError("Informe a data prevista do repasse.");
+    if (Number(form.card_fee_percent) < 0 || Number(form.anticipation_fee_percent) < 0)
+      return setFormError("As taxas não podem ser negativas.");
     if (Number(form.down_payment) < 0)
       return setFormError("O valor da entrada não pode ser negativo.");
     if (Number(form.down_payment) > estimatedNet)
@@ -1561,6 +1584,10 @@ function CloseSaleDialog({
                 ...form,
                 payment_method: value as PaymentMethod,
                 installments: value === "cartao_credito" ? form.installments : "1",
+                settlement_mode: "integral",
+                card_fee_percent: value === "cartao_credito" ? form.card_fee_percent : "0",
+                anticipation_fee_percent:
+                  value === "cartao_credito" ? form.anticipation_fee_percent : "0",
               })
             }
           >
@@ -1580,7 +1607,16 @@ function CloseSaleDialog({
           <Input
             type="date"
             value={form.sale_date}
-            onChange={(event) => setForm({ ...form, sale_date: event.target.value })}
+            onChange={(event) =>
+              setForm({
+                ...form,
+                sale_date: event.target.value,
+                settlement_date:
+                  form.settlement_date === form.sale_date
+                    ? event.target.value
+                    : form.settlement_date,
+              })
+            }
           />
         </Field>
         <Field label="Outro desconto concedido (opcional)">
@@ -1595,20 +1631,7 @@ function CloseSaleDialog({
             Use somente se você concedeu um desconto além do preço já definido para Pix ou cartão.
           </p>
         </Field>
-        <Field label="Entrada paga no fechamento (opcional)">
-          <Input
-            type="number"
-            min="0"
-            step="0.01"
-            value={form.down_payment}
-            onChange={(event) => setForm({ ...form, down_payment: event.target.value })}
-          />
-          <p className="mt-1 text-xs text-muted-foreground">
-            É a parte paga agora quando o restante será parcelado. Se não houve entrada separada,
-            deixe zero.
-          </p>
-        </Field>
-        <Field label="Parcelas">
+        <Field label="Parcelas cobradas do cliente">
           <Input
             type="number"
             min="1"
@@ -1617,8 +1640,74 @@ function CloseSaleDialog({
             disabled={form.payment_method !== "cartao_credito"}
             onChange={(event) => setForm({ ...form, installments: event.target.value })}
           />
+          <p className="mt-1 text-xs text-muted-foreground">
+            Esta quantidade descreve a cobrança do cliente e não o número de entradas no seu caixa.
+          </p>
         </Field>
-        <div className="grid gap-3 sm:col-span-2 sm:grid-cols-3">
+        {form.payment_method === "cartao_credito" ? (
+          <>
+            <Field label="Forma de repasse ao consultório">
+              <Select
+                value={form.settlement_mode}
+                onValueChange={(value) =>
+                  setForm({ ...form, settlement_mode: value as "integral" | "parcelado" })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="integral">Repasse integral em uma data</SelectItem>
+                  <SelectItem value="parcelado">Repasses mensais</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Data prevista do primeiro repasse">
+              <Input
+                type="date"
+                value={form.settlement_date}
+                onChange={(event) => setForm({ ...form, settlement_date: event.target.value })}
+              />
+            </Field>
+            <Field label="Taxa do cartão (%)">
+              <Input
+                type="number"
+                min="0"
+                max="100"
+                step="0.01"
+                value={form.card_fee_percent}
+                onChange={(event) => setForm({ ...form, card_fee_percent: event.target.value })}
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                Custo cobrado pela operadora. Não é desconto concedido ao cliente.
+              </p>
+            </Field>
+            <Field label="Taxa de antecipação (%)">
+              <Input
+                type="number"
+                min="0"
+                max="100"
+                step="0.01"
+                value={form.anticipation_fee_percent}
+                onChange={(event) =>
+                  setForm({ ...form, anticipation_fee_percent: event.target.value })
+                }
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                Preencha somente quando houver cobrança adicional para antecipar o repasse.
+              </p>
+            </Field>
+          </>
+        ) : (
+          <Field label="Data prevista do recebimento">
+            <Input
+              type="date"
+              value={form.settlement_date}
+              onChange={(event) => setForm({ ...form, settlement_date: event.target.value })}
+            />
+          </Field>
+        )}
+        <div className="grid gap-3 sm:col-span-2 sm:grid-cols-2 lg:grid-cols-4">
           <div className="rounded-lg border bg-muted/40 p-3">
             <p className="text-xs text-muted-foreground">Valor bruto do plano</p>
             <p className="mt-1 text-lg font-semibold">{formatBRL(grossAmount)}</p>
@@ -1628,8 +1717,15 @@ function CloseSaleDialog({
             <p className="mt-1 text-lg font-semibold">{formatBRL(totalDiscount)}</p>
           </div>
           <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-            <p className="text-xs text-emerald-800">Valor líquido da venda</p>
+            <p className="text-xs text-emerald-800">Receita líquida da venda</p>
             <p className="mt-1 text-lg font-semibold text-emerald-950">{formatBRL(estimatedNet)}</p>
+          </div>
+          <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
+            <p className="text-xs text-blue-800">Valor previsto no caixa</p>
+            <p className="mt-1 text-lg font-semibold text-blue-950">{formatBRL(estimatedCash)}</p>
+            <p className="mt-1 text-xs text-blue-800">
+              Após {formatBRL(estimatedProcessingFee)} de taxas
+            </p>
           </div>
         </div>
         {financialPreview.data ? (
@@ -1653,17 +1749,25 @@ function CloseSaleDialog({
                   Aproximadamente {formatBRL(financialPreview.data.recognition[0]?.net_amount ?? 0)}
                   /mês por {financialPreview.data.recognition.length} meses
                 </p>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  As taxas de {formatBRL(financialPreview.data.processingFee)} serão registradas
+                  separadamente como despesa comercial, sem reduzir o desconto do cliente.
+                </p>
               </div>
               <div className="rounded-lg border bg-white p-3">
                 <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                   Fluxo de caixa
                 </p>
                 <p className="mt-2 text-sm">
-                  {financialPreview.data.installments.length} lançamento(s) previsto(s), totalizando{" "}
-                  {formatBRL(financialPreview.data.netAmount)}.
+                  {financialPreview.data.settlements.length} entrada(s) prevista(s), totalizando{" "}
+                  {formatBRL(financialPreview.data.expectedCashAmount)} no caixa.
+                </p>
+                <p className="mt-2 text-sm">
+                  O cliente pagará em {financialPreview.data.customerInstallments}x, mas o número de
+                  repasses segue a forma escolhida acima.
                 </p>
                 <p className="mt-2 text-sm font-medium">
-                  Recebido automaticamente agora: {formatBRL(0)}
+                  Taxas da operadora: {formatBRL(financialPreview.data.processingFee)}
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   O dinheiro só entra no caixa após a baixa do recebimento no módulo Financeiro.
@@ -1672,36 +1776,34 @@ function CloseSaleDialog({
             </div>
             <div className="rounded-lg border bg-white p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-sm font-semibold">Previsão das parcelas</p>
+                <p className="text-sm font-semibold">Previsão dos repasses ao consultório</p>
                 <p className="text-xs text-muted-foreground">
                   Conta financeira será definida na baixa
                 </p>
               </div>
               <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                {financialPreview.data.installments.map((installment) => (
+                {financialPreview.data.settlements.map((settlement) => (
                   <div
-                    key={`${installment.installment_number}-${installment.due_date}`}
+                    key={`${settlement.installment_number}-${settlement.due_date}`}
                     className="flex items-center justify-between rounded-md bg-muted/50 px-3 py-2 text-sm"
                   >
                     <span>
-                      Parcela {installment.installment_number}/{installment.installment_total} ·{" "}
-                      {formatDate(installment.due_date)}
+                      Repasse {settlement.installment_number}/{settlement.installment_total} ·{" "}
+                      {formatDate(settlement.due_date)}
                     </span>
-                    <strong>{formatBRL(installment.expected_amount)}</strong>
+                    <strong>{formatBRL(settlement.expected_amount)}</strong>
                   </div>
                 ))}
               </div>
             </div>
             <div className="grid gap-2 text-sm sm:grid-cols-3">
               <DetailItem
-                label="Entrada informada"
-                value={formatBRL(financialPreview.data.downPayment)}
+                label="Receita líquida da venda"
+                value={formatBRL(financialPreview.data.netAmount)}
               />
               <DetailItem
-                label="Restante após a entrada"
-                value={formatBRL(
-                  Math.max(0, financialPreview.data.netAmount - financialPreview.data.downPayment),
-                )}
+                label="Taxas de cartão/antecipação"
+                value={formatBRL(financialPreview.data.processingFee)}
               />
               <DetailItem
                 label="Contato para renovação"

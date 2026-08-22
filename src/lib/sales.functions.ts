@@ -3,7 +3,7 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import {
   addDays,
   addMonths,
-  buildInstallments,
+  buildSettlement,
   buildRecognition,
   fromCents,
   listPriceForMethod,
@@ -19,6 +19,10 @@ export type WonSaleInput = {
   discount: number;
   installments: number;
   downPayment: number;
+  settlementMode: "integral" | "parcelado";
+  settlementDate: string;
+  cardFeePercent: number;
+  anticipationFeePercent: number;
   opportunityId?: string | null;
   accountId?: string | null;
   isRenewal?: boolean;
@@ -27,7 +31,16 @@ export type WonSaleInput = {
 
 export type SalePreviewInput = Pick<
   WonSaleInput,
-  "planId" | "paymentMethod" | "saleDate" | "discount" | "installments" | "downPayment"
+  | "planId"
+  | "paymentMethod"
+  | "saleDate"
+  | "discount"
+  | "installments"
+  | "downPayment"
+  | "settlementMode"
+  | "settlementDate"
+  | "cardFeePercent"
+  | "anticipationFeePercent"
 >;
 
 /** Usa as mesmas regras financeiras do fechamento para explicar o impacto antes da confirmação. */
@@ -36,6 +49,7 @@ export const previewWonSale = createServerFn({ method: "POST" })
   .inputValidator((input: SalePreviewInput) => {
     if (!input.planId) throw new Error("Selecione o plano.");
     if (!input.saleDate) throw new Error("Informe a data da venda.");
+    if (!input.settlementDate) throw new Error("Informe a data prevista do repasse.");
     return input;
   })
   .handler(async ({ data, context }) => {
@@ -63,11 +77,19 @@ export const previewWonSale = createServerFn({ method: "POST" })
       data.paymentMethod === "cartao_credito"
         ? Math.max(1, data.installments || plan.installment_count || 1)
         : Math.max(1, data.installments || 1);
-    const installmentRows = buildInstallments({
-      netAmountCents: netCents,
-      installments,
-      downPaymentCents: toCents(data.downPayment || 0),
-      saleDate: data.saleDate,
+    const cardFeeCents = Math.round(
+      (netCents * Math.max(0, Number(data.cardFeePercent || 0))) / 100,
+    );
+    const anticipationFeeCents = Math.round(
+      (netCents * Math.max(0, Number(data.anticipationFeePercent || 0))) / 100,
+    );
+    const processingFeeCents = Math.min(netCents, cardFeeCents + anticipationFeeCents);
+    const expectedCashCents = Math.max(0, netCents - processingFeeCents);
+    const settlementRows = buildSettlement({
+      amountCents: expectedCashCents,
+      customerInstallments: installments,
+      mode: data.settlementMode,
+      settlementDate: data.settlementDate,
     });
     const recognition = buildRecognition({
       listAmountCents: listCents,
@@ -83,7 +105,10 @@ export const previewWonSale = createServerFn({ method: "POST" })
       totalDiscount: fromCents(totalDiscount),
       netAmount: fromCents(netCents),
       downPayment: Math.min(fromCents(netCents), Math.max(0, Number(data.downPayment || 0))),
-      installments: installmentRows,
+      settlements: settlementRows,
+      customerInstallments: installments,
+      processingFee: fromCents(processingFeeCents),
+      expectedCashAmount: fromCents(expectedCashCents),
       recognition: recognition.map((row) => ({
         ...row,
         net_amount: Math.max(0, row.gross_amount - row.deduction_amount),
@@ -109,6 +134,9 @@ export const registerWonSale = createServerFn({ method: "POST" })
     if (Number(input.discount) < 0) throw new Error("O desconto não pode ser negativo.");
     if (Number(input.downPayment) < 0) throw new Error("A entrada não pode ser negativa.");
     if (Number(input.installments) < 1) throw new Error("Informe ao menos uma parcela.");
+    if (!input.settlementDate) throw new Error("Informe a data prevista do repasse.");
+    if (Number(input.cardFeePercent) < 0 || Number(input.anticipationFeePercent) < 0)
+      throw new Error("As taxas não podem ser negativas.");
     return input;
   })
   .handler(async ({ data, context }) => {
@@ -202,6 +230,14 @@ export const registerWonSale = createServerFn({ method: "POST" })
       data.paymentMethod === "cartao_credito"
         ? Math.max(1, data.installments || plan.installment_count || 1)
         : Math.max(1, data.installments || 1);
+    const cardFeeCents = Math.round(
+      (netCents * Math.max(0, Number(data.cardFeePercent || 0))) / 100,
+    );
+    const anticipationFeeCents = Math.round(
+      (netCents * Math.max(0, Number(data.anticipationFeePercent || 0))) / 100,
+    );
+    const processingFeeCents = Math.min(netCents, cardFeeCents + anticipationFeeCents);
+    const expectedCashCents = Math.max(0, netCents - processingFeeCents);
 
     const { data: sale, error: saleError } = await supabase
       .from("sales")
@@ -217,6 +253,12 @@ export const registerWonSale = createServerFn({ method: "POST" })
         payment_method: data.paymentMethod as never,
         installments,
         down_payment: Math.max(0, Number(data.downPayment || 0)),
+        settlement_mode: data.settlementMode,
+        settlement_date: data.settlementDate,
+        card_fee_percent: Math.max(0, Number(data.cardFeePercent || 0)),
+        anticipation_fee_percent: Math.max(0, Number(data.anticipationFeePercent || 0)),
+        processing_fee_amount: fromCents(processingFeeCents),
+        expected_cash_amount: fromCents(expectedCashCents),
         is_renewal: Boolean(data.isRenewal),
         notes: data.notes ?? null,
         created_by: userId,
@@ -245,27 +287,31 @@ export const registerWonSale = createServerFn({ method: "POST" })
     if (contractError)
       throw new Error(`Venda criada, mas o contrato falhou: ${contractError.message}`);
 
-    const installmentRows = buildInstallments({
-      netAmountCents: netCents,
-      installments,
-      downPaymentCents: toCents(data.downPayment || 0),
-      saleDate: data.saleDate,
+    const settlementRows = buildSettlement({
+      amountCents: expectedCashCents,
+      customerInstallments: installments,
+      mode: data.settlementMode,
+      settlementDate: data.settlementDate,
     });
 
     const { error: recvError } = await supabase.from("receivables").insert(
-      installmentRows.map((row) => ({
+      settlementRows.map((row) => ({
         org_id: orgId,
         patient_id: patientId,
         sale_id: sale.id,
         contract_id: contract.id,
         account_id: data.accountId ?? null,
-        description: `${plan.name} — parcela ${row.installment_number}/${row.installment_total}`,
+        description:
+          data.settlementMode === "integral"
+            ? `${plan.name} — repasse integral líquido`
+            : `${plan.name} — repasse ${row.installment_number}/${row.installment_total}`,
         installment_number: row.installment_number,
         installment_total: row.installment_total,
         due_date: row.due_date,
         expected_amount: row.expected_amount,
         status: "pendente" as never,
         payment_method: data.paymentMethod as never,
+        notes: `Venda em ${installments}x para o cliente. Taxas descontadas do repasse: ${fromCents(processingFeeCents).toFixed(2)}.`,
       })),
     );
     if (recvError) throw new Error(`Parcelas não geradas: ${recvError.message}`);
@@ -355,8 +401,11 @@ export const registerWonSale = createServerFn({ method: "POST" })
     return {
       saleId: sale.id,
       contractId: contract.id,
-      installments: installmentRows.length,
+      installments,
+      settlements: settlementRows.length,
       netAmount: fromCents(netCents),
+      expectedCashAmount: fromCents(expectedCashCents),
+      processingFee: fromCents(processingFeeCents),
       listAmount: fromCents(listCents),
       discount: fromCents(totalDiscount),
       monthlyRecognition: recognition[0]?.gross_amount ?? 0,

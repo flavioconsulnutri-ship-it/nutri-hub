@@ -50,7 +50,11 @@ export const getDashboard = createServerFn({ method: "POST" })
       opportunities,
       appointments,
     ] = await Promise.all([
-      supabase.from("sales").select("net_amount, cancelled, is_renewal").gte("sale_date", from).lte("sale_date", to),
+      supabase
+        .from("sales")
+        .select("net_amount, cancelled, is_renewal, processing_fee_amount")
+        .gte("sale_date", from)
+        .lte("sale_date", to),
       supabase
         .from("revenue_recognition")
         .select("gross_amount, deduction_amount, cancelled")
@@ -62,14 +66,23 @@ export const getDashboard = createServerFn({ method: "POST" })
         .gte("settled_at", from)
         .lte("settled_at", to),
       supabase.from("receivables").select("expected_amount, received_amount, status, due_date"),
-      supabase.from("payables").select("paid_amount").gte("due_date", from).lte("due_date", to).in("status", ["pago", "parcialmente_pago"]),
+      supabase
+        .from("payables")
+        .select("paid_amount")
+        .gte("due_date", from)
+        .lte("due_date", to)
+        .in("status", ["pago", "parcialmente_pago"]),
       supabase.from("cash_transactions").select("amount, direction"),
       supabase.from("financial_accounts").select("initial_balance"),
       supabase.from("patients").select("id, status"),
       supabase.from("patients").select("id").gte("entry_date", from).lte("entry_date", to),
       supabase.from("contracts").select("id, status, expected_renewal_date, end_date"),
       supabase.from("opportunities").select("id, stage, created_at"),
-      supabase.from("appointments").select("id, status, patient_id, starts_at").gte("starts_at", from).lte("starts_at", `${to}T23:59:59`),
+      supabase
+        .from("appointments")
+        .select("id, status, patient_id, starts_at")
+        .gte("starts_at", from)
+        .lte("starts_at", `${to}T23:59:59`),
     ]);
 
     const num = (v: unknown) => Number(v ?? 0);
@@ -77,6 +90,7 @@ export const getDashboard = createServerFn({ method: "POST" })
     const soldAmount = activeSales.reduce((a, s) => a + num(s.net_amount), 0);
     const salesCount = activeSales.length;
     const renewals = activeSales.filter((s) => s.is_renewal).length;
+    const processingFees = activeSales.reduce((a, s) => a + num(s.processing_fee_amount), 0);
 
     const recognizedRevenue = (recognition.data ?? [])
       .filter((r) => !r.cancelled)
@@ -116,9 +130,7 @@ export const getDashboard = createServerFn({ method: "POST" })
 
     const expectedRenewals = (contracts.data ?? []).filter(
       (c) =>
-        c.expected_renewal_date &&
-        c.expected_renewal_date >= from &&
-        c.expected_renewal_date <= to,
+        c.expected_renewal_date && c.expected_renewal_date >= from && c.expected_renewal_date <= to,
     ).length;
     const dueContracts = (contracts.data ?? []).filter(
       (c) => c.end_date >= from && c.end_date <= to,
@@ -155,7 +167,7 @@ export const getDashboard = createServerFn({ method: "POST" })
       overdueAmount,
       overdueCount: overdueList.length,
       paidExpenses,
-      operationalResult: recognizedRevenue - paidExpenses,
+      operationalResult: recognizedRevenue - paidExpenses - processingFees,
       cashBalance,
       averageTicket: salesCount > 0 ? soldAmount / salesCount : 0,
       activePatients,
@@ -192,7 +204,7 @@ export const getDre = createServerFn({ method: "POST" })
       (_, i) => `${data.year}-${String(i + 1).padStart(2, "0")}`,
     );
 
-    const [recognition, payables] = await Promise.all([
+    const [recognition, payables, saleFees] = await Promise.all([
       supabase
         .from("revenue_recognition")
         .select("competence_date, gross_amount, deduction_amount, cancelled")
@@ -200,9 +212,16 @@ export const getDre = createServerFn({ method: "POST" })
         .lte("competence_date", to),
       supabase
         .from("payables")
-        .select("competence_date, expected_amount, paid_amount, status, categories(dre_group, name)")
+        .select(
+          "competence_date, expected_amount, paid_amount, status, categories(dre_group, name)",
+        )
         .gte("competence_date", from)
         .lte("competence_date", to),
+      supabase
+        .from("sales")
+        .select("sale_date, processing_fee_amount, cancelled")
+        .gte("sale_date", from)
+        .lte("sale_date", to),
     ]);
 
     const empty = () => Object.fromEntries(months.map((m) => [m, 0])) as Record<string, number>;
@@ -227,6 +246,15 @@ export const getDre = createServerFn({ method: "POST" })
       byGroup[group] ??= empty();
       const value = Number(p.expected_amount ?? 0);
       byGroup[group]![key] = (byGroup[group]![key] ?? 0) + value;
+    }
+
+    byGroup["despesas_comerciais"] ??= empty();
+    for (const sale of saleFees.data ?? []) {
+      if (sale.cancelled) continue;
+      const key = String(sale.sale_date).slice(0, 7);
+      if (!(key in gross)) continue;
+      byGroup["despesas_comerciais"]![key] =
+        (byGroup["despesas_comerciais"]![key] ?? 0) + Number(sale.processing_fee_amount ?? 0);
     }
 
     const sum = (v: Record<string, number>) => Object.values(v).reduce((a, b) => a + b, 0);
@@ -267,9 +295,7 @@ export const getDre = createServerFn({ method: "POST" })
         row("receita_liquida", "Receita líquida", netRevenue),
         row("custos_diretos", "(-) Custos diretos do serviço", directCosts),
         row("margem", "Margem de contribuição", contribution),
-        ...expenseGroups.map((g) =>
-          row(g, `(-) ${dreLabel(g)}`, byGroup[g] ?? empty()),
-        ),
+        ...expenseGroups.map((g) => row(g, `(-) ${dreLabel(g)}`, byGroup[g] ?? empty())),
         row("resultado_operacional", "Resultado operacional", operational),
         row("outras", "(-) Outras receitas e despesas", others),
         row("resultado_liquido", "Resultado líquido", netResult),
