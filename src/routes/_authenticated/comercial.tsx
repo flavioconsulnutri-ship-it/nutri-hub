@@ -50,6 +50,17 @@ import { formatBRL, formatDate, todayISO } from "@/lib/format";
 
 type FunnelStage = Database["public"]["Enums"]["funnel_stage"];
 type LeadRow = Database["public"]["Tables"]["leads"]["Row"];
+type AgendaEntry = {
+  id: string;
+  date: string;
+  kind: "defined" | "playbook";
+  title: string;
+  details: string | null;
+  leadName: string;
+  opportunityId: string;
+  lead: LeadRow | null;
+  taskId: string | null;
+};
 const alphabetical = (items: string[]) => [...items].sort((a, b) => a.localeCompare(b, "pt-BR"));
 const leadSources = alphabetical([
   "Instagram",
@@ -237,7 +248,7 @@ function CommercialPage() {
         .select("*, opportunities(title, lead_id, leads(full_name))")
         .eq("status", "pendente")
         .order("due_date")
-        .limit(200);
+        .limit(1000);
       if (error) throw new Error(error.message);
       return data;
     },
@@ -319,7 +330,14 @@ function CommercialPage() {
       awaiting: all
         .filter((i) => i.stage === "aguardando_pagamento")
         .reduce((sum, i) => sum + Number(i.amount), 0),
-      dueToday: (tasks.data ?? []).filter((t) => t.due_date <= todayISO()).length,
+      dueToday:
+        (tasks.data ?? []).filter((task) => task.due_date <= todayISO()).length +
+        all.filter(
+          (opportunity) =>
+            opportunity.next_action_date &&
+            opportunity.next_action_date <= todayISO() &&
+            !["ganha", "perdida"].includes(opportunity.stage),
+        ).length,
     };
   }, [opportunities.data, tasks.data]);
   const dashboard = useMemo(() => {
@@ -456,6 +474,59 @@ function CommercialPage() {
         .sort((a, b) => (a.next_action_date ?? "").localeCompare(b.next_action_date ?? "")),
     [opportunities.data],
   );
+  const agenda = useMemo(() => {
+    const entries: AgendaEntry[] = nextActions.map((opportunity) => {
+      const lead = (leads.data ?? []).find((item) => item.id === opportunity.lead_id) ?? null;
+      return {
+        id: `defined-${opportunity.id}`,
+        date: opportunity.next_action_date ?? todayISO(),
+        kind: "defined",
+        title: opportunity.next_action ?? "Próxima ação",
+        details: opportunity.next_action_details,
+        leadName: lead?.full_name ?? opportunity.title,
+        opportunityId: opportunity.id,
+        lead,
+        taskId: null,
+      };
+    });
+
+    for (const task of tasks.data ?? []) {
+      const related = task.opportunities as {
+        title: string;
+        lead_id: string | null;
+        leads: { full_name: string } | null;
+      } | null;
+      const lead = (leads.data ?? []).find((item) => item.id === related?.lead_id) ?? null;
+      entries.push({
+        id: `playbook-${task.id}`,
+        date: task.due_date,
+        kind: "playbook",
+        title: task.title,
+        details: null,
+        leadName: lead?.full_name ?? related?.leads?.full_name ?? related?.title ?? "Lead",
+        opportunityId: task.opportunity_id,
+        lead,
+        taskId: task.id,
+      });
+    }
+
+    entries.sort((a, b) => a.date.localeCompare(b.date) || a.leadName.localeCompare(b.leadName));
+    const grouped = new Map<string, AgendaEntry[]>();
+    for (const entry of entries) {
+      grouped.set(entry.date, [...(grouped.get(entry.date) ?? []), entry]);
+    }
+    const weekEnd = new Date(`${todayISO()}T12:00:00`);
+    weekEnd.setDate(weekEnd.getDate() + 7);
+    const weekEndISO = weekEnd.toISOString().slice(0, 10);
+
+    return {
+      days: Array.from(grouped, ([date, items]) => ({ date, items })),
+      overdue: entries.filter((entry) => entry.date < todayISO()).length,
+      today: entries.filter((entry) => entry.date === todayISO()).length,
+      nextSevenDays: entries.filter((entry) => entry.date > todayISO() && entry.date <= weekEndISO)
+        .length,
+    };
+  }, [leads.data, nextActions, tasks.data]);
   const selectedOpportunity = (opportunities.data ?? []).find(
     (opportunity) => opportunity.id === selectedOpportunityId,
   );
@@ -486,7 +557,7 @@ function CommercialPage() {
         />
         <Metric label="Aguardando pagamento" value={formatBRL(metrics.awaiting)} />
         <Metric
-          label="Tarefas vencendo hoje"
+          label="Ações para hoje ou vencidas"
           value={String(metrics.dueToday)}
           alert={metrics.dueToday > 0}
         />
@@ -821,115 +892,114 @@ function CommercialPage() {
         </TabsContent>
         <TabsContent value="tarefas" className="mt-4">
           <div className="space-y-5">
-            <section className="panel overflow-hidden">
-              <div className="border-b border-border p-4">
-                <h2 className="font-semibold">Ações combinadas com os leads</h2>
+            <section className="panel p-5">
+              <div>
+                <h2 className="font-semibold">Agenda comercial por dia</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Esta é a próxima ação e a data informadas no cadastro ou na edição de cada lead.
-                  Ao editar o lead, este quadro é atualizado automaticamente.
+                  Reúne a ação definida no cadastro e todos os lembretes automáticos da etapa atual.
                 </p>
               </div>
-              {nextActions.length === 0 ? (
-                <div className="p-4 text-sm text-muted-foreground">
-                  Nenhum lead ativo possui uma próxima ação com data.
-                </div>
-              ) : (
-                <div className="divide-y divide-border">
-                  {nextActions.map((opportunity) => {
-                    const lead = (leads.data ?? []).find((item) => item.id === opportunity.lead_id);
-                    const dueDate = opportunity.next_action_date ?? "";
-                    const timing =
-                      dueDate < todayISO()
-                        ? { label: "Vencida", className: "bg-red-100 text-red-700" }
-                        : dueDate === todayISO()
-                          ? { label: "Hoje", className: "bg-amber-100 text-amber-800" }
-                          : { label: "Agendada", className: "bg-blue-100 text-blue-700" };
-                    return (
-                      <div
-                        key={opportunity.id}
-                        className="flex flex-wrap items-center justify-between gap-3 p-4"
-                      >
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <p className="text-sm font-medium">{opportunity.next_action}</p>
-                            <span
-                              className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${timing.className}`}
-                            >
-                              {timing.label}
-                            </span>
-                          </div>
-                          <p className="mt-1 text-xs text-muted-foreground">
-                            {lead?.full_name ?? opportunity.title} · {formatDate(dueDate)}
-                            {opportunity.next_action_details
-                              ? ` · ${opportunity.next_action_details}`
-                              : ""}
-                          </p>
-                        </div>
-                        <div className="flex gap-2">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => setSelectedOpportunityId(opportunity.id)}
-                          >
-                            Ver lead
-                          </Button>
-                          {lead ? (
-                            <Button size="sm" onClick={() => setEditingLead(lead)}>
-                              <Pencil className="size-4" /> Atualizar ação
-                            </Button>
-                          ) : null}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <AgendaMetric
+                  label="Atrasadas"
+                  value={agenda.overdue}
+                  tone={agenda.overdue > 0 ? "danger" : "neutral"}
+                />
+                <AgendaMetric
+                  label="Para hoje"
+                  value={agenda.today}
+                  tone={agenda.today > 0 ? "warning" : "neutral"}
+                />
+                <AgendaMetric label="Próximos 7 dias" value={agenda.nextSevenDays} tone="info" />
+              </div>
             </section>
 
-            <section className="panel overflow-hidden">
-              <div className="border-b border-border p-4">
-                <h2 className="font-semibold">Lembretes automáticos do playbook</h2>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  São tentativas sugeridas pela régua comercial. Elas são recalculadas quando o lead
-                  muda de etapa no Kanban.
-                </p>
-              </div>
-              {(tasks.data ?? []).length === 0 ? (
-                <div className="p-4 text-sm text-muted-foreground">
-                  Nenhum lembrete automático pendente.
-                </div>
-              ) : (
-                <div className="divide-y divide-border">
-                  {(tasks.data ?? []).map((task) => {
-                    const opp = task.opportunities as {
-                      title: string;
-                      leads: { full_name: string } | null;
-                    } | null;
-                    return (
+            {agenda.days.length === 0 ? (
+              <EmptyState
+                title="Agenda comercial vazia"
+                description="Cadastre uma próxima ação ou mova um lead de etapa para gerar a régua do playbook."
+              />
+            ) : (
+              <div className="space-y-4">
+                {agenda.days.map((day) => {
+                  const overdue = day.date < todayISO();
+                  const isToday = day.date === todayISO();
+                  return (
+                    <section key={day.date} className="panel overflow-hidden">
                       <div
-                        key={task.id}
-                        className="flex flex-wrap items-center justify-between gap-3 p-4"
+                        className={`flex items-center justify-between border-b border-border px-4 py-3 ${
+                          overdue ? "bg-red-50" : isToday ? "bg-amber-50" : "bg-muted/40"
+                        }`}
                       >
                         <div>
-                          <p className="text-sm font-medium">{task.title}</p>
-                          <p className="mt-1 text-xs text-muted-foreground">
-                            {opp?.leads?.full_name ?? opp?.title} · {formatDate(task.due_date)}
+                          <p className="font-semibold capitalize">{formatAgendaDay(day.date)}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {overdue
+                              ? "Pendências vencidas"
+                              : isToday
+                                ? "Prioridades de hoje"
+                                : "Programado"}
                           </p>
                         </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={completeTask.isPending}
-                          onClick={() => completeTask.mutate(task.id)}
-                        >
-                          <CheckCircle2 className="size-4" /> Concluir lembrete
-                        </Button>
+                        <span className="rounded-full bg-background px-2.5 py-1 text-xs font-medium shadow-sm">
+                          {day.items.length} {day.items.length === 1 ? "ação" : "ações"}
+                        </span>
                       </div>
-                    );
-                  })}
-                </div>
-              )}
-            </section>
+                      <div className="divide-y divide-border">
+                        {day.items.map((entry) => (
+                          <div
+                            key={entry.id}
+                            className="flex flex-wrap items-center justify-between gap-3 p-4"
+                          >
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="text-sm font-medium">{entry.title}</p>
+                                <span
+                                  className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                                    entry.kind === "defined"
+                                      ? "bg-blue-100 text-blue-700"
+                                      : "bg-violet-100 text-violet-700"
+                                  }`}
+                                >
+                                  {entry.kind === "defined" ? "Ação definida" : "Playbook"}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {entry.leadName}
+                                {entry.details ? ` · ${entry.details}` : ""}
+                              </p>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setSelectedOpportunityId(entry.opportunityId)}
+                              >
+                                Ver lead
+                              </Button>
+                              {entry.kind === "defined" && entry.lead ? (
+                                <Button size="sm" onClick={() => setEditingLead(entry.lead)}>
+                                  <Pencil className="size-4" /> Atualizar ação
+                                </Button>
+                              ) : null}
+                              {entry.kind === "playbook" && entry.taskId ? (
+                                <Button
+                                  size="sm"
+                                  disabled={completeTask.isPending}
+                                  onClick={() => completeTask.mutate(entry.taskId!)}
+                                >
+                                  <CheckCircle2 className="size-4" /> Concluir
+                                </Button>
+                              ) : null}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </TabsContent>
         <TabsContent value="leads" className="mt-4">
@@ -1976,6 +2046,45 @@ function Metric({
       <p className="mt-2 text-metric text-2xl font-semibold">{value}</p>
     </div>
   );
+}
+
+function AgendaMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: "neutral" | "danger" | "warning" | "info";
+}) {
+  const tones = {
+    neutral: "border-border bg-muted/30 text-foreground",
+    danger: "border-red-200 bg-red-50 text-red-700",
+    warning: "border-amber-200 bg-amber-50 text-amber-800",
+    info: "border-blue-200 bg-blue-50 text-blue-700",
+  };
+  return (
+    <div className={`rounded-lg border p-3 ${tones[tone]}`}>
+      <p className="text-xs font-medium">{label}</p>
+      <p className="mt-1 text-xl font-semibold">{value}</p>
+    </div>
+  );
+}
+
+function formatAgendaDay(value: string) {
+  const date = new Date(`${value}T12:00:00`);
+  const tomorrow = new Date(`${todayISO()}T12:00:00`);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowISO = tomorrow.toISOString().slice(0, 10);
+  const formatted = date.toLocaleDateString("pt-BR", {
+    weekday: "long",
+    day: "2-digit",
+    month: "long",
+    ...(date.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}),
+  });
+  if (value === todayISO()) return `Hoje, ${formatted}`;
+  if (value === tomorrowISO) return `Amanhã, ${formatted}`;
+  return formatted;
 }
 
 function DetailItem({
