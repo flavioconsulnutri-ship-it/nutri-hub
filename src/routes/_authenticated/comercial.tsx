@@ -47,9 +47,14 @@ import {
   splitInternationalPhone,
 } from "@/lib/countries";
 import { formatBRL, formatDate, todayISO } from "@/lib/format";
+import { paymentMethodLabel } from "@/lib/labels";
+import { registerWonSale } from "@/lib/sales.functions";
 
 type FunnelStage = Database["public"]["Enums"]["funnel_stage"];
+type PaymentMethod = Database["public"]["Enums"]["payment_method"];
 type LeadRow = Database["public"]["Tables"]["leads"]["Row"];
+type OpportunityRow = Database["public"]["Tables"]["opportunities"]["Row"];
+type PlanRow = Database["public"]["Tables"]["plans"]["Row"];
 type AgendaEntry = {
   id: string;
   date: string;
@@ -195,6 +200,7 @@ function CommercialPage() {
   const [open, setOpen] = useState(false);
   const [editingLead, setEditingLead] = useState<LeadRow | null>(null);
   const [selectedOpportunityId, setSelectedOpportunityId] = useState<string | null>(null);
+  const [closingOpportunityId, setClosingOpportunityId] = useState<string | null>(null);
   const [dragOverStage, setDragOverStage] = useState<FunnelStage | null>(null);
   const didDrag = useRef(false);
   const [dashboardFrom, setDashboardFrom] = useState(() => {
@@ -242,6 +248,18 @@ function CommercialPage() {
         .from("profiles")
         .select("id, full_name")
         .order("full_name");
+      if (error) throw new Error(error.message);
+      return data;
+    },
+  });
+  const plans = useQuery({
+    queryKey: ["active-plans"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("plans")
+        .select("*")
+        .eq("active", true)
+        .order("name");
       if (error) throw new Error(error.message);
       return data;
     },
@@ -537,6 +555,10 @@ function CommercialPage() {
     (opportunity) => opportunity.id === selectedOpportunityId,
   );
   const selectedLead = (leads.data ?? []).find((lead) => lead.id === selectedOpportunity?.lead_id);
+  const closingOpportunity = (opportunities.data ?? []).find(
+    (opportunity) => opportunity.id === closingOpportunityId,
+  );
+  const closingLead = (leads.data ?? []).find((lead) => lead.id === closingOpportunity?.lead_id);
   const filteredBaseLeads = useMemo(() => {
     const normalizedSearch = leadSearch.trim().toLocaleLowerCase("pt-BR");
     const opportunityByLead = new Map(
@@ -862,7 +884,8 @@ function CommercialPage() {
                         "application/x-opportunity-stage",
                       ) as FunnelStage;
                       if (id && from && from !== stage.value) {
-                        move.mutate({ id, from, to: stage.value });
+                        if (stage.value === "ganha") setClosingOpportunityId(id);
+                        else move.mutate({ id, from, to: stage.value });
                       }
                     }}
                   >
@@ -1323,7 +1346,263 @@ function CommercialPage() {
           <EditLeadDialog lead={editingLead} onDone={() => setEditingLead(null)} />
         ) : null}
       </Dialog>
+      <Dialog
+        open={closingOpportunityId !== null}
+        onOpenChange={(value) => !value && setClosingOpportunityId(null)}
+      >
+        {closingOpportunity && closingLead ? (
+          <CloseSaleDialog
+            opportunity={closingOpportunity}
+            lead={closingLead}
+            plans={plans.data ?? []}
+            plansLoading={plans.isLoading}
+            onDone={() => setClosingOpportunityId(null)}
+          />
+        ) : null}
+      </Dialog>
     </PageBody>
+  );
+}
+
+function CloseSaleDialog({
+  opportunity,
+  lead,
+  plans,
+  plansLoading,
+  onDone,
+}: {
+  opportunity: OpportunityRow;
+  lead: LeadRow;
+  plans: PlanRow[];
+  plansLoading: boolean;
+  onDone: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [confirmed, setConfirmed] = useState(false);
+  const [formError, setFormError] = useState("");
+  const [form, setForm] = useState({
+    plan_id: opportunity.plan_id ?? "",
+    payment_method: (opportunity.payment_method ?? "pix") as PaymentMethod,
+    sale_date: todayISO(),
+    discount: "0",
+    installments: "1",
+    down_payment: "0",
+    is_renewal: false,
+    notes: "",
+  });
+
+  useEffect(() => {
+    if (!form.plan_id && plans[0]) setForm((current) => ({ ...current, plan_id: plans[0]!.id }));
+  }, [form.plan_id, plans]);
+
+  const selectedPlan = plans.find((plan) => plan.id === form.plan_id);
+  const estimatedBase = selectedPlan
+    ? form.payment_method === "cartao_credito"
+      ? Number(selectedPlan.card_total)
+      : form.payment_method === "cortesia"
+        ? 0
+        : Number(selectedPlan.pix_price)
+    : 0;
+  const estimatedNet = Math.max(0, estimatedBase - Number(form.discount || 0));
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      registerWonSale({
+        data: {
+          leadId: lead.id,
+          opportunityId: opportunity.id,
+          planId: form.plan_id,
+          paymentMethod: form.payment_method,
+          saleDate: form.sale_date,
+          discount: Number(form.discount || 0),
+          installments: Number(form.installments || 1),
+          downPayment: Number(form.down_payment || 0),
+          isRenewal: form.is_renewal,
+          notes: form.notes.trim() || null,
+        },
+      }),
+    onSuccess: async (result) => {
+      toast.success(
+        `Venda registrada. ${lead.full_name} agora é paciente ativo. Valor líquido: ${formatBRL(result.netAmount)}.`,
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["opportunities"] }),
+        queryClient.invalidateQueries({ queryKey: ["leads"] }),
+        queryClient.invalidateQueries({ queryKey: ["crm-tasks"] }),
+        queryClient.invalidateQueries({ queryKey: ["patients"] }),
+        queryClient.invalidateQueries({ queryKey: ["sales"] }),
+        queryClient.invalidateQueries({ queryKey: ["contracts"] }),
+        queryClient.invalidateQueries({ queryKey: ["receivables"] }),
+      ]);
+      onDone();
+    },
+    onError: (error: Error) => setFormError(error.message),
+  });
+
+  const submit = () => {
+    setFormError("");
+    if (!form.plan_id) return setFormError("Cadastre ou selecione um plano para concluir a venda.");
+    if (!form.sale_date) return setFormError("Informe a data da venda.");
+    if (Number(form.discount) < 0) return setFormError("O desconto não pode ser negativo.");
+    if (Number(form.installments) < 1) return setFormError("Informe ao menos uma parcela.");
+    if (Number(form.down_payment) < 0)
+      return setFormError("O valor da entrada não pode ser negativo.");
+    if (Number(form.down_payment) > estimatedNet)
+      return setFormError("A entrada não pode ser maior que o valor líquido da venda.");
+    if (!confirmed)
+      return setFormError("Confirme o pagamento ou a condição comercial antes de concluir.");
+    mutation.mutate();
+  };
+
+  const paymentMethods: PaymentMethod[] = [
+    "pix",
+    "cartao_credito",
+    "cartao_debito",
+    "dinheiro",
+    "boleto",
+    "transferencia",
+    "permuta",
+    "cortesia",
+  ];
+
+  return (
+    <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+      <DialogHeader>
+        <DialogTitle>Confirmar venda — {lead.full_name}</DialogTitle>
+      </DialogHeader>
+      <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
+        O card só será movido para Venda concluída depois do registro da venda. O sistema também
+        criará o paciente, o contrato, as parcelas e o reconhecimento da receita.
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="Plano" className="sm:col-span-2">
+          <Select
+            value={form.plan_id}
+            onValueChange={(value) => setForm({ ...form, plan_id: value })}
+            disabled={plansLoading || plans.length === 0}
+          >
+            <SelectTrigger>
+              <SelectValue
+                placeholder={plansLoading ? "Carregando planos..." : "Selecione o plano"}
+              />
+            </SelectTrigger>
+            <SelectContent>
+              {plans.map((plan) => (
+                <SelectItem key={plan.id} value={plan.id}>
+                  {plan.name} — Pix {formatBRL(Number(plan.pix_price))} | Cartão{" "}
+                  {formatBRL(Number(plan.card_total))}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {!plansLoading && plans.length === 0 ? (
+            <p className="mt-2 text-sm text-destructive">
+              Nenhum plano ativo encontrado. Cadastre um plano antes de concluir a venda.
+            </p>
+          ) : null}
+        </Field>
+        <Field label="Forma de pagamento">
+          <Select
+            value={form.payment_method}
+            onValueChange={(value) =>
+              setForm({
+                ...form,
+                payment_method: value as PaymentMethod,
+                installments: value === "cartao_credito" ? form.installments : "1",
+              })
+            }
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {paymentMethods.map((method) => (
+                <SelectItem key={method} value={method}>
+                  {paymentMethodLabel[method]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field label="Data da venda">
+          <Input
+            type="date"
+            value={form.sale_date}
+            onChange={(event) => setForm({ ...form, sale_date: event.target.value })}
+          />
+        </Field>
+        <Field label="Desconto adicional">
+          <Input
+            type="number"
+            min="0"
+            step="0.01"
+            value={form.discount}
+            onChange={(event) => setForm({ ...form, discount: event.target.value })}
+          />
+        </Field>
+        <Field label="Valor de entrada">
+          <Input
+            type="number"
+            min="0"
+            step="0.01"
+            value={form.down_payment}
+            onChange={(event) => setForm({ ...form, down_payment: event.target.value })}
+          />
+        </Field>
+        <Field label="Parcelas">
+          <Input
+            type="number"
+            min="1"
+            max="48"
+            value={form.installments}
+            disabled={form.payment_method !== "cartao_credito"}
+            onChange={(event) => setForm({ ...form, installments: event.target.value })}
+          />
+        </Field>
+        <div className="rounded-lg border bg-muted/40 p-3">
+          <p className="text-xs text-muted-foreground">Valor líquido estimado</p>
+          <p className="mt-1 text-lg font-semibold">{formatBRL(estimatedNet)}</p>
+        </div>
+        <label className="flex items-center gap-3 rounded-lg border p-3 sm:col-span-2">
+          <Checkbox
+            checked={form.is_renewal}
+            onCheckedChange={(value) => setForm({ ...form, is_renewal: value === true })}
+          />
+          <span className="text-sm">Esta venda é uma renovação de acompanhamento</span>
+        </label>
+        <Field label="Observações" className="sm:col-span-2">
+          <Textarea
+            value={form.notes}
+            onChange={(event) => setForm({ ...form, notes: event.target.value })}
+            placeholder="Condição negociada, comprovante ou informação relevante"
+          />
+        </Field>
+        <label className="flex items-start gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 sm:col-span-2">
+          <Checkbox checked={confirmed} onCheckedChange={(value) => setConfirmed(value === true)} />
+          <span className="text-sm">
+            Confirmo que o pagamento ou a condição comercial foi validada e que esta negociação pode
+            ser registrada como venda concluída.
+          </span>
+        </label>
+        {formError ? (
+          <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive sm:col-span-2">
+            {formError}
+          </p>
+        ) : null}
+      </div>
+      <DialogFooter>
+        <Button variant="outline" onClick={onDone} disabled={mutation.isPending}>
+          Cancelar
+        </Button>
+        <Button
+          onClick={submit}
+          disabled={mutation.isPending || plansLoading || plans.length === 0}
+        >
+          <CheckCircle2 className="size-4" />
+          {mutation.isPending ? "Registrando venda..." : "Confirmar e concluir venda"}
+        </Button>
+      </DialogFooter>
+    </DialogContent>
   );
 }
 

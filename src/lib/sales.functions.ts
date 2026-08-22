@@ -11,7 +11,8 @@ import {
 } from "./finance.server";
 
 export type WonSaleInput = {
-  patientId: string;
+  patientId?: string | null;
+  leadId?: string | null;
   planId: string;
   paymentMethod: string;
   saleDate: string;
@@ -32,9 +33,14 @@ export type WonSaleInput = {
 export const registerWonSale = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((input: WonSaleInput) => {
-    if (!input.patientId) throw new Error("Selecione o paciente.");
+    if (!input.patientId && !input.leadId)
+      throw new Error("Informe o paciente ou o lead da venda.");
     if (!input.planId) throw new Error("Selecione o plano.");
     if (!input.saleDate) throw new Error("Informe a data da venda.");
+    if (!input.paymentMethod) throw new Error("Selecione a forma de pagamento.");
+    if (Number(input.discount) < 0) throw new Error("O desconto não pode ser negativo.");
+    if (Number(input.downPayment) < 0) throw new Error("A entrada não pode ser negativa.");
+    if (Number(input.installments) < 1) throw new Error("Informe ao menos uma parcela.");
     return input;
   })
   .handler(async ({ data, context }) => {
@@ -48,10 +54,73 @@ export const registerWonSale = createServerFn({ method: "POST" })
     if (profileError || !profile) throw new Error("Perfil não encontrado.");
     const orgId = profile.org_id;
 
+    if (data.opportunityId) {
+      const { data: existingSale } = await supabase
+        .from("sales")
+        .select("id")
+        .eq("opportunity_id", data.opportunityId)
+        .eq("cancelled", false)
+        .maybeSingle();
+      if (existingSale) throw new Error("Esta oportunidade já possui uma venda registrada.");
+    }
+
+    let patientId = data.patientId ?? null;
+    let lead: {
+      id: string;
+      converted_patient_id: string | null;
+      email: string | null;
+      full_name: string;
+      notes: string | null;
+      org_id: string;
+      phone: string;
+      referred_by: string | null;
+      source: string | null;
+    } | null = null;
+
+    if (data.leadId) {
+      const { data: leadData, error: leadError } = await supabase
+        .from("leads")
+        .select(
+          "id, converted_patient_id, email, full_name, notes, org_id, phone, referred_by, source",
+        )
+        .eq("id", data.leadId)
+        .eq("org_id", orgId)
+        .maybeSingle();
+      if (leadError || !leadData) throw new Error("Lead não encontrado.");
+      lead = leadData;
+      patientId = patientId ?? lead.converted_patient_id;
+    }
+
+    if (!patientId && lead) {
+      const { data: patient, error: patientError } = await supabase
+        .from("patients")
+        .insert({
+          org_id: orgId,
+          full_name: lead.full_name,
+          phone: lead.phone || null,
+          email: lead.email || null,
+          source: lead.source,
+          referred_by: lead.referred_by,
+          notes: lead.notes,
+          status: "lead" as never,
+          entry_date: data.saleDate,
+          created_by: userId,
+        })
+        .select("id")
+        .single();
+      if (patientError || !patient)
+        throw new Error(`Não foi possível converter o lead em paciente: ${patientError?.message}`);
+      patientId = patient.id;
+      await supabase.from("leads").update({ converted_patient_id: patientId }).eq("id", lead.id);
+    }
+
+    if (!patientId) throw new Error("Não foi possível identificar o paciente da venda.");
+
     const { data: plan, error: planError } = await supabase
       .from("plans")
       .select("*")
       .eq("id", data.planId)
+      .eq("org_id", orgId)
       .maybeSingle();
     if (planError || !plan) throw new Error("Plano não encontrado.");
 
@@ -70,7 +139,7 @@ export const registerWonSale = createServerFn({ method: "POST" })
       .from("sales")
       .insert({
         org_id: orgId,
-        patient_id: data.patientId,
+        patient_id: patientId,
         plan_id: data.planId,
         opportunity_id: data.opportunityId ?? null,
         sale_date: data.saleDate,
@@ -94,7 +163,7 @@ export const registerWonSale = createServerFn({ method: "POST" })
       .insert({
         org_id: orgId,
         sale_id: sale.id,
-        patient_id: data.patientId,
+        patient_id: patientId,
         plan_id: data.planId,
         start_date: data.saleDate,
         end_date: endDate,
@@ -105,7 +174,8 @@ export const registerWonSale = createServerFn({ method: "POST" })
       })
       .select("*")
       .single();
-    if (contractError) throw new Error(`Venda criada, mas o contrato falhou: ${contractError.message}`);
+    if (contractError)
+      throw new Error(`Venda criada, mas o contrato falhou: ${contractError.message}`);
 
     const installmentRows = buildInstallments({
       netAmountCents: netCents,
@@ -117,7 +187,7 @@ export const registerWonSale = createServerFn({ method: "POST" })
     const { error: recvError } = await supabase.from("receivables").insert(
       installmentRows.map((row) => ({
         org_id: orgId,
-        patient_id: data.patientId,
+        patient_id: patientId,
         sale_id: sale.id,
         contract_id: contract.id,
         account_id: data.accountId ?? null,
@@ -143,7 +213,7 @@ export const registerWonSale = createServerFn({ method: "POST" })
         org_id: orgId,
         contract_id: contract.id,
         sale_id: sale.id,
-        patient_id: data.patientId,
+        patient_id: patientId,
         competence_date: row.competence_date,
         gross_amount: row.gross_amount,
         deduction_amount: row.deduction_amount,
@@ -155,13 +225,16 @@ export const registerWonSale = createServerFn({ method: "POST" })
     const { data: patient } = await supabase
       .from("patients")
       .select("status")
-      .eq("id", data.patientId)
+      .eq("id", patientId)
       .maybeSingle();
     if (patient && patient.status !== "ativo") {
-      await supabase.from("patients").update({ status: "ativo" as never }).eq("id", data.patientId);
+      await supabase
+        .from("patients")
+        .update({ status: "ativo" as never })
+        .eq("id", patientId);
       await supabase.from("patient_status_history").insert({
         org_id: orgId,
-        patient_id: data.patientId,
+        patient_id: patientId,
         from_status: patient.status,
         to_status: "ativo" as never,
         changed_by: userId,
@@ -169,11 +242,46 @@ export const registerWonSale = createServerFn({ method: "POST" })
       });
     }
 
-    if (data.opportunityId) {
+    if (lead) {
       await supabase
+        .from("leads")
+        .update({ converted_patient_id: patientId, converted_at: new Date().toISOString() })
+        .eq("id", lead.id);
+    }
+
+    if (data.opportunityId) {
+      const { data: updatedOpportunity } = await supabase
         .from("opportunities")
-        .update({ stage: "ganha" as never, closed_at: new Date().toISOString() })
-        .eq("id", data.opportunityId);
+        .update({
+          stage: "ganha" as never,
+          closed_at: new Date().toISOString(),
+          patient_id: patientId,
+          plan_id: data.planId,
+          payment_method: data.paymentMethod as never,
+          amount: fromCents(netCents),
+          next_action: null,
+          next_action_details: null,
+          next_action_date: null,
+          stalled_from_stage: null,
+        })
+        .eq("id", data.opportunityId)
+        .select("owner_id")
+        .maybeSingle();
+      await supabase.from("opportunity_activities").insert({
+        org_id: orgId,
+        opportunity_id: data.opportunityId,
+        kind: "venda_concluida",
+        description: `Pagamento confirmado. Venda registrada no valor líquido de ${fromCents(netCents).toFixed(2)}.`,
+        created_by: userId,
+      });
+      await supabase.from("crm_tasks").insert({
+        org_id: orgId,
+        opportunity_id: data.opportunityId,
+        title: "Iniciar onboarding do novo paciente",
+        due_date: data.saleDate,
+        sequence_key: `onboarding:${sale.id}`,
+        assigned_to: updatedOpportunity?.owner_id ?? userId,
+      });
     }
 
     return {
@@ -185,6 +293,7 @@ export const registerWonSale = createServerFn({ method: "POST" })
       discount: fromCents(totalDiscount),
       monthlyRecognition: recognition[0]?.gross_amount ?? 0,
       endDate,
+      patientId,
     };
   });
 
@@ -199,7 +308,10 @@ export const cancelSale = createServerFn({ method: "POST" })
     const { supabase } = context;
     const today = new Date().toISOString().slice(0, 10);
 
-    await supabase.from("sales").update({ cancelled: true, notes: data.reason ?? null }).eq("id", data.saleId);
+    await supabase
+      .from("sales")
+      .update({ cancelled: true, notes: data.reason ?? null })
+      .eq("id", data.saleId);
     await supabase
       .from("receivables")
       .update({ status: "cancelado" as never })
@@ -210,6 +322,9 @@ export const cancelSale = createServerFn({ method: "POST" })
       .update({ cancelled: true })
       .eq("sale_id", data.saleId)
       .gte("competence_date", today.slice(0, 7) + "-01");
-    await supabase.from("contracts").update({ status: "cancelado" as never }).eq("sale_id", data.saleId);
+    await supabase
+      .from("contracts")
+      .update({ status: "cancelado" as never })
+      .eq("sale_id", data.saleId);
     return { ok: true };
   });
