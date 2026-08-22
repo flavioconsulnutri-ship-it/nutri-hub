@@ -49,6 +49,7 @@ import {
 import { formatBRL, formatDate, todayISO } from "@/lib/format";
 import { paymentMethodLabel } from "@/lib/labels";
 import { registerWonSale } from "@/lib/sales.functions";
+import { seedCatalog } from "@/lib/setup.functions";
 
 type FunnelStage = Database["public"]["Enums"]["funnel_stage"];
 type PaymentMethod = Database["public"]["Enums"]["payment_method"];
@@ -1396,14 +1397,27 @@ function CloseSaleDialog({
   }, [form.plan_id, plans]);
 
   const selectedPlan = plans.find((plan) => plan.id === form.plan_id);
-  const estimatedBase = selectedPlan
+  const grossAmount = selectedPlan ? Number(selectedPlan.card_total) : 0;
+  const paymentConditionAmount = selectedPlan
     ? form.payment_method === "cartao_credito"
       ? Number(selectedPlan.card_total)
       : form.payment_method === "cortesia"
         ? 0
         : Number(selectedPlan.pix_price)
     : 0;
-  const estimatedNet = Math.max(0, estimatedBase - Number(form.discount || 0));
+  const additionalDiscount = Number(form.discount || 0);
+  const estimatedNet = Math.max(0, paymentConditionAmount - additionalDiscount);
+  const totalDiscount = Math.max(0, grossAmount - estimatedNet);
+
+  const setupCatalog = useMutation({
+    mutationFn: () => seedCatalog(),
+    onSuccess: async (created) => {
+      await queryClient.invalidateQueries({ queryKey: ["active-plans"] });
+      if (created.plans > 0) toast.success(`${created.plans} planos foram disponibilizados.`);
+      else toast.info("O catálogo já existe. Atualizando a lista de planos...");
+    },
+    onError: (error: Error) => setFormError(error.message),
+  });
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -1496,9 +1510,22 @@ function CloseSaleDialog({
             </SelectContent>
           </Select>
           {!plansLoading && plans.length === 0 ? (
-            <p className="mt-2 text-sm text-destructive">
-              Nenhum plano ativo encontrado. Cadastre um plano antes de concluir a venda.
-            </p>
+            <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <p className="text-sm text-amber-950">
+                Nenhum plano está disponível ainda. Carregue o catálogo inicial do consultório para
+                selecionar o plano vendido.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                className="mt-3"
+                disabled={setupCatalog.isPending}
+                onClick={() => setupCatalog.mutate()}
+              >
+                <Plus className="size-4" />
+                {setupCatalog.isPending ? "Carregando planos..." : "Carregar catálogo de planos"}
+              </Button>
+            </div>
           ) : null}
         </Field>
         <Field label="Forma de pagamento">
@@ -1531,7 +1558,7 @@ function CloseSaleDialog({
             onChange={(event) => setForm({ ...form, sale_date: event.target.value })}
           />
         </Field>
-        <Field label="Desconto adicional">
+        <Field label="Outro desconto concedido (opcional)">
           <Input
             type="number"
             min="0"
@@ -1539,8 +1566,11 @@ function CloseSaleDialog({
             value={form.discount}
             onChange={(event) => setForm({ ...form, discount: event.target.value })}
           />
+          <p className="mt-1 text-xs text-muted-foreground">
+            Use somente se você concedeu um desconto além do preço já definido para Pix ou cartão.
+          </p>
         </Field>
-        <Field label="Valor de entrada">
+        <Field label="Entrada paga no fechamento (opcional)">
           <Input
             type="number"
             min="0"
@@ -1548,6 +1578,10 @@ function CloseSaleDialog({
             value={form.down_payment}
             onChange={(event) => setForm({ ...form, down_payment: event.target.value })}
           />
+          <p className="mt-1 text-xs text-muted-foreground">
+            É a parte paga agora quando o restante será parcelado. Se não houve entrada separada,
+            deixe zero.
+          </p>
         </Field>
         <Field label="Parcelas">
           <Input
@@ -1559,9 +1593,19 @@ function CloseSaleDialog({
             onChange={(event) => setForm({ ...form, installments: event.target.value })}
           />
         </Field>
-        <div className="rounded-lg border bg-muted/40 p-3">
-          <p className="text-xs text-muted-foreground">Valor líquido estimado</p>
-          <p className="mt-1 text-lg font-semibold">{formatBRL(estimatedNet)}</p>
+        <div className="grid gap-3 sm:col-span-2 sm:grid-cols-3">
+          <div className="rounded-lg border bg-muted/40 p-3">
+            <p className="text-xs text-muted-foreground">Valor bruto do plano</p>
+            <p className="mt-1 text-lg font-semibold">{formatBRL(grossAmount)}</p>
+          </div>
+          <div className="rounded-lg border bg-muted/40 p-3">
+            <p className="text-xs text-muted-foreground">Descontos totais</p>
+            <p className="mt-1 text-lg font-semibold">{formatBRL(totalDiscount)}</p>
+          </div>
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+            <p className="text-xs text-emerald-800">Valor líquido da venda</p>
+            <p className="mt-1 text-lg font-semibold text-emerald-950">{formatBRL(estimatedNet)}</p>
+          </div>
         </div>
         <label className="flex items-center gap-3 rounded-lg border p-3 sm:col-span-2">
           <Checkbox
