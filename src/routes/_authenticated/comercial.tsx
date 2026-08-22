@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import { EmptyState, PageBody, PageHeader } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -32,6 +33,77 @@ import { formatBRL, formatDate, todayISO } from "@/lib/format";
 
 type FunnelStage = Database["public"]["Enums"]["funnel_stage"];
 type LeadRow = Database["public"]["Tables"]["leads"]["Row"];
+const leadSources = [
+  "Instagram",
+  "WhatsApp",
+  "Google",
+  "Site",
+  "Indicação de paciente",
+  "Indicação de parceiro",
+  "Evento/Palestra",
+  "Tráfego pago",
+  "Orgânico",
+  "Outro",
+  "Não identificado",
+];
+const leadGoals = [
+  "Emagrecimento",
+  "Hipertrofia",
+  "Reeducação alimentar",
+  "Comportamento alimentar",
+  "Relação com a comida",
+  "Dificuldades com compulsão alimentar",
+  "Saúde e qualidade de vida",
+  "Tratamento nutricional",
+  "Performance esportiva",
+  "Gestação e fertilidade",
+  "Nutrição vegetariana/vegana",
+  "Outro",
+];
+const actionOptions = [
+  "Responder primeiro contato",
+  "Enviar mensagem",
+  "Fazer ligação",
+  "Enviar áudio",
+  "Entender objetivo e necessidade",
+  "Fazer qualificação",
+  "Solicitar informações",
+  "Solicitar documentos",
+  "Agendar pré-consulta",
+  "Reagendar pré-consulta",
+  "Confirmar presença",
+  "Realizar pré-consulta",
+  "Retomar após ausência",
+  "Apresentar plano",
+  "Enviar proposta",
+  "Reenviar proposta",
+  "Tirar dúvidas",
+  "Fazer follow-up",
+  "Negociar condições",
+  "Oferecer alternativa de plano",
+  "Enviar link de pagamento",
+  "Reenviar link de pagamento",
+  "Cobrar pagamento",
+  "Confirmar pagamento",
+  "Solicitar comprovante",
+  "Reativar contato",
+  "Registrar desistência",
+  "Encaminhar para onboarding",
+  "Encaminhar para atendimento",
+  "Atualizar cadastro",
+  "Aguardar retorno do lead",
+  "Criar ação personalizada",
+];
+const countryCodes = [
+  { value: "+55", label: "🇧🇷 +55" },
+  { value: "+351", label: "🇵🇹 +351" },
+  { value: "+1", label: "🇺🇸/🇨🇦 +1" },
+  { value: "+34", label: "🇪🇸 +34" },
+  { value: "+44", label: "🇬🇧 +44" },
+  { value: "+54", label: "🇦🇷 +54" },
+  { value: "+56", label: "🇨🇱 +56" },
+  { value: "+57", label: "🇨🇴 +57" },
+];
 const stages: Array<{ value: FunnelStage; label: string; helper: string; tone: string }> = [
   {
     value: "novo_lead",
@@ -552,17 +624,46 @@ function EditLeadDialog({ lead, onDone }: { lead: LeadRow; onDone: () => void })
 function NewLeadDialog({ onDone }: { onDone: () => void }) {
   const queryClient = useQueryClient();
   const [formError, setFormError] = useState("");
+  const [selectedGoals, setSelectedGoals] = useState<string[]>([]);
   const [form, setForm] = useState({
     full_name: "",
     phone: "",
+    phone_country: "+55",
     email: "",
     lead_type: "lead_novo",
     source: "",
     referred_by: "",
-    main_goal: "",
+    other_goal: "",
+    temperature: "morno",
+    owner_id: "",
     notes: "",
-    next_action: "Responder e entender objetivo",
+    next_action: "Responder primeiro contato",
+    custom_action: "",
+    action_details: "",
     next_action_date: todayISO(),
+  });
+  const profiles = useQuery({
+    queryKey: ["crm-responsibles"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, full_name")
+        .order("full_name");
+      if (error) throw new Error(error.message);
+      return data;
+    },
+  });
+  const customActions = useQuery({
+    queryKey: ["crm-action-catalog"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("crm_action_catalog")
+        .select("name")
+        .eq("active", true)
+        .order("name");
+      if (error) throw new Error(error.message);
+      return data;
+    },
   });
   const mutation = useMutation({
     mutationFn: async () => {
@@ -575,19 +676,38 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
         .eq("id", userData.user!.id)
         .maybeSingle();
       if (!profile) throw new Error("Perfil não encontrado.");
+      const actionName =
+        form.next_action === "Criar ação personalizada"
+          ? form.custom_action.trim()
+          : form.next_action;
+      if (form.next_action === "Criar ação personalizada") {
+        const { error: catalogError } = await supabase.from("crm_action_catalog").upsert(
+          {
+            org_id: profile.org_id,
+            name: actionName,
+            created_by: userData.user!.id,
+          },
+          { onConflict: "org_id,name" },
+        );
+        if (catalogError) throw new Error(catalogError.message);
+      }
       const { data: lead, error: leadError } = await supabase
         .from("leads")
         .insert({
           org_id: profile.org_id,
           full_name: form.full_name.trim(),
-          phone: form.phone.trim(),
+          phone: `${form.phone_country}${form.phone.replace(/\D/g, "")}`,
           email: form.email || null,
           lead_type: form.lead_type,
           source: form.source || null,
           referred_by: form.referred_by || null,
-          main_goal: form.main_goal || null,
+          main_goal:
+            [...selectedGoals.filter((goal) => goal !== "Outro"), form.other_goal.trim()]
+              .filter(Boolean)
+              .join(", ") || null,
+          temperature: form.temperature,
           notes: form.notes || null,
-          owner_id: userData.user!.id,
+          owner_id: form.owner_id || userData.user!.id,
         })
         .select("id")
         .single();
@@ -600,8 +720,9 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
         title: `Negociação — ${form.full_name.trim()}`,
         stage,
         source: form.source || null,
-        owner_id: userData.user!.id,
-        next_action: form.next_action,
+        owner_id: form.owner_id || userData.user!.id,
+        next_action: actionName,
+        next_action_details: form.action_details.trim() || null,
         next_action_date: form.next_action_date,
       });
       if (error) throw new Error(error.message);
@@ -612,6 +733,7 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
         queryClient.invalidateQueries({ queryKey: ["leads"] }),
         queryClient.invalidateQueries({ queryKey: ["opportunities"] }),
         queryClient.invalidateQueries({ queryKey: ["crm-tasks"] }),
+        queryClient.invalidateQueries({ queryKey: ["crm-action-catalog"] }),
       ]);
       onDone();
     },
@@ -629,6 +751,18 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
     }
     if (!form.next_action.trim()) {
       setFormError("Informe qual será a próxima ação.");
+      return;
+    }
+    if (form.next_action === "Criar ação personalizada" && !form.custom_action.trim()) {
+      setFormError("Descreva o nome da ação personalizada.");
+      return;
+    }
+    if (selectedGoals.length === 0) {
+      setFormError("Selecione pelo menos um objetivo.");
+      return;
+    }
+    if (selectedGoals.includes("Outro") && !form.other_goal.trim()) {
+      setFormError("Especifique o outro objetivo.");
       return;
     }
     if (!form.next_action_date) {
@@ -656,8 +790,30 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
             onChange={(e) => setForm({ ...form, full_name: e.target.value })}
           />
         </Field>
-        <Field label="Telefone">
-          <Input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+        <Field label="WhatsApp">
+          <div className="flex gap-2">
+            <Select
+              value={form.phone_country}
+              onValueChange={(value) => setForm({ ...form, phone_country: value })}
+            >
+              <SelectTrigger className="w-32">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {countryCodes.map((country) => (
+                  <SelectItem key={country.value} value={country.value}>
+                    {country.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Input
+              inputMode="tel"
+              placeholder="DDD + número"
+              value={form.phone}
+              onChange={(e) => setForm({ ...form, phone: e.target.value })}
+            />
+          </div>
         </Field>
         <Field label="E-mail">
           <Input
@@ -679,11 +835,21 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
           </Select>
         </Field>
         <Field label="Origem">
-          <Input
-            placeholder="Instagram, parceiro, Google..."
+          <Select
             value={form.source}
-            onChange={(e) => setForm({ ...form, source: e.target.value })}
-          />
+            onValueChange={(value) => setForm({ ...form, source: value })}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Selecione a origem" />
+            </SelectTrigger>
+            <SelectContent>
+              {leadSources.map((source) => (
+                <SelectItem key={source} value={source}>
+                  {source}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </Field>
         <Field label="Indicado por">
           <Input
@@ -691,16 +857,101 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
             onChange={(e) => setForm({ ...form, referred_by: e.target.value })}
           />
         </Field>
-        <Field label="Objetivo principal">
-          <Input
-            value={form.main_goal}
-            onChange={(e) => setForm({ ...form, main_goal: e.target.value })}
-          />
+        <Field label="Temperatura">
+          <Select
+            value={form.temperature}
+            onValueChange={(value) => setForm({ ...form, temperature: value })}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="frio">Frio</SelectItem>
+              <SelectItem value="morno">Morno</SelectItem>
+              <SelectItem value="quente">Quente</SelectItem>
+            </SelectContent>
+          </Select>
         </Field>
+        <Field label="Responsável">
+          <Select
+            value={form.owner_id}
+            onValueChange={(value) => setForm({ ...form, owner_id: value })}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Eu (padrão)" />
+            </SelectTrigger>
+            <SelectContent>
+              {(profiles.data ?? []).map((profile) => (
+                <SelectItem key={profile.id} value={profile.id}>
+                  {profile.full_name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field label="Objetivos" className="sm:col-span-2">
+          <div className="grid gap-2 rounded-md border p-3 sm:grid-cols-2">
+            {leadGoals.map((goal) => (
+              <label key={goal} className="flex cursor-pointer items-center gap-2 text-sm">
+                <Checkbox
+                  checked={selectedGoals.includes(goal)}
+                  onCheckedChange={(checked) =>
+                    setSelectedGoals(
+                      checked
+                        ? [...selectedGoals, goal]
+                        : selectedGoals.filter((item) => item !== goal),
+                    )
+                  }
+                />
+                {goal}
+              </label>
+            ))}
+          </div>
+        </Field>
+        {selectedGoals.includes("Outro") ? (
+          <Field label="Especifique o objetivo" className="sm:col-span-2">
+            <Input
+              value={form.other_goal}
+              onChange={(e) => setForm({ ...form, other_goal: e.target.value })}
+            />
+          </Field>
+        ) : null}
         <Field label="Próxima ação">
-          <Input
+          <Select
             value={form.next_action}
-            onChange={(e) => setForm({ ...form, next_action: e.target.value })}
+            onValueChange={(value) => setForm({ ...form, next_action: value })}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {[
+                ...actionOptions.filter((action) => action !== "Criar ação personalizada"),
+                ...(customActions.data ?? []).map((action) => action.name),
+                "Criar ação personalizada",
+              ]
+                .filter((action, index, list) => list.indexOf(action) === index)
+                .map((action) => (
+                  <SelectItem key={action} value={action}>
+                    {action}
+                  </SelectItem>
+                ))}
+            </SelectContent>
+          </Select>
+        </Field>
+        {form.next_action === "Criar ação personalizada" ? (
+          <Field label="Nome da ação personalizada" className="sm:col-span-2">
+            <Input
+              value={form.custom_action}
+              onChange={(e) => setForm({ ...form, custom_action: e.target.value })}
+            />
+          </Field>
+        ) : null}
+        <Field label="Complemento da próxima ação" className="sm:col-span-2">
+          <Input
+            placeholder="Detalhe opcional do que deverá ser feito"
+            value={form.action_details}
+            onChange={(e) => setForm({ ...form, action_details: e.target.value })}
           />
         </Field>
         <Field label="Data da próxima ação">
