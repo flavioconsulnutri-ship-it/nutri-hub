@@ -2,6 +2,17 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, Clock3, Pencil, Phone, Plus, Trash2, UserRound } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { toast } from "sonner";
 
 import { EmptyState, PageBody, PageHeader } from "@/components/AppShell";
@@ -172,6 +183,15 @@ export const Route = createFileRoute("/_authenticated/comercial")({
 function CommercialPage() {
   const [open, setOpen] = useState(false);
   const [editingLead, setEditingLead] = useState<LeadRow | null>(null);
+  const [dashboardFrom, setDashboardFrom] = useState(() => {
+    const date = new Date();
+    date.setMonth(date.getMonth() - 5, 1);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-01`;
+  });
+  const [dashboardTo, setDashboardTo] = useState(todayISO());
+  const [sourceFilter, setSourceFilter] = useState("todos");
+  const [temperatureFilter, setTemperatureFilter] = useState("todos");
+  const [ownerFilter, setOwnerFilter] = useState("todos");
   const queryClient = useQueryClient();
   const opportunities = useQuery({
     queryKey: ["opportunities"],
@@ -195,15 +215,26 @@ function CommercialPage() {
       return data;
     },
   });
+  const responsibles = useQuery({
+    queryKey: ["crm-responsibles"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, full_name")
+        .order("full_name");
+      if (error) throw new Error(error.message);
+      return data;
+    },
+  });
   const tasks = useQuery({
     queryKey: ["crm-tasks"],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("crm_tasks")
-        .select("*, opportunities(title, leads(full_name))")
+        .select("*, opportunities(title, lead_id, leads(full_name))")
         .eq("status", "pendente")
         .order("due_date")
-        .limit(40);
+        .limit(200);
       if (error) throw new Error(error.message);
       return data;
     },
@@ -288,6 +319,128 @@ function CommercialPage() {
       dueToday: (tasks.data ?? []).filter((t) => t.due_date <= todayISO()).length,
     };
   }, [opportunities.data, tasks.data]);
+  const dashboard = useMemo(() => {
+    const filteredLeads = (leads.data ?? []).filter((lead) => {
+      const day = lead.created_at.slice(0, 10);
+      return (
+        day >= dashboardFrom &&
+        day <= dashboardTo &&
+        (sourceFilter === "todos" || (lead.source ?? "Não identificado") === sourceFilter) &&
+        (temperatureFilter === "todos" || lead.temperature === temperatureFilter) &&
+        (ownerFilter === "todos" || lead.owner_id === ownerFilter)
+      );
+    });
+    const leadIds = new Set(filteredLeads.map((lead) => lead.id));
+    const filteredOpportunities = (opportunities.data ?? []).filter(
+      (opportunity) => opportunity.lead_id && leadIds.has(opportunity.lead_id),
+    );
+    const won = filteredOpportunities.filter((opportunity) => opportunity.stage === "ganha");
+    const revenue = won.reduce((sum, opportunity) => sum + Number(opportunity.amount), 0);
+    const months: Array<{
+      key: string;
+      label: string;
+      leads: number;
+      vendas: number;
+      faturamento: number;
+    }> = [];
+    const cursor = new Date(`${dashboardFrom}T12:00:00`);
+    const end = new Date(`${dashboardTo}T12:00:00`);
+    cursor.setDate(1);
+    for (let index = 0; cursor <= end && index < 24; index += 1) {
+      const key = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}`;
+      months.push({
+        key,
+        label: cursor.toLocaleDateString("pt-BR", { month: "short", year: "2-digit" }),
+        leads: filteredLeads.filter((lead) => lead.created_at.startsWith(key)).length,
+        vendas: won.filter((item) => (item.closed_at ?? item.created_at).startsWith(key)).length,
+        faturamento: won
+          .filter((item) => (item.closed_at ?? item.created_at).startsWith(key))
+          .reduce((sum, item) => sum + Number(item.amount), 0),
+      });
+      cursor.setMonth(cursor.getMonth() + 1);
+    }
+    const origins = Array.from(
+      filteredLeads
+        .reduce((map, lead) => {
+          const source = lead.source || "Não identificado";
+          const current = map.get(source) ?? {
+            origem: source,
+            leads: 0,
+            vendas: 0,
+            faturamento: 0,
+          };
+          current.leads += 1;
+          const sales = won.filter((item) => item.lead_id === lead.id);
+          current.vendas += sales.length;
+          current.faturamento += sales.reduce((sum, item) => sum + Number(item.amount), 0);
+          map.set(source, current);
+          return map;
+        }, new Map<string, { origem: string; leads: number; vendas: number; faturamento: number }>())
+        .values(),
+    ).sort((a, b) => b.leads - a.leads);
+    const stageData = stages
+      .map((stage) => ({
+        label: stage.label,
+        value: filteredOpportunities.filter((item) => item.stage === stage.value).length,
+      }))
+      .filter((item) => item.value > 0);
+    const temperatureData = [
+      {
+        label: "❄️ Frios",
+        value: filteredLeads.filter((lead) => lead.temperature === "frio").length,
+      },
+      {
+        label: "🌤️ Mornos",
+        value: filteredLeads.filter((lead) => lead.temperature === "morno").length,
+      },
+      {
+        label: "🔥 Quentes",
+        value: filteredLeads.filter((lead) => lead.temperature === "quente").length,
+      },
+    ];
+    const urgentTasks = (tasks.data ?? []).filter((task) => {
+      const opportunity = task.opportunities as { lead_id?: string | null } | null;
+      return (
+        task.due_date <= todayISO() && opportunity?.lead_id && leadIds.has(opportunity.lead_id)
+      );
+    });
+    return {
+      leads: filteredLeads.length,
+      active: filteredOpportunities.filter((item) => activeStages.includes(item.stage)).length,
+      followUps: filteredOpportunities.filter((item) =>
+        ["follow_up", "reativacao_futura", "follow_up_infinito"].includes(item.stage),
+      ).length,
+      won: won.length,
+      conversion: filteredLeads.length ? won.length / filteredLeads.length : 0,
+      revenue,
+      ticket: won.length ? revenue / won.length : 0,
+      overdue: urgentTasks.length,
+      withoutAction: filteredOpportunities.filter(
+        (item) => activeStages.includes(item.stage) && !item.next_action_date,
+      ).length,
+      months,
+      origins,
+      stageData,
+      temperatureData,
+      urgentTasks: urgentTasks.slice(0, 8),
+    };
+  }, [
+    dashboardFrom,
+    dashboardTo,
+    leads.data,
+    opportunities.data,
+    ownerFilter,
+    sourceFilter,
+    tasks.data,
+    temperatureFilter,
+  ]);
+  const sourceOptions = useMemo(
+    () =>
+      Array.from(
+        new Set((leads.data ?? []).map((lead) => lead.source || "Não identificado")),
+      ).sort(),
+    [leads.data],
+  );
 
   return (
     <PageBody>
@@ -319,12 +472,189 @@ function CommercialPage() {
           alert={metrics.dueToday > 0}
         />
       </div>
-      <Tabs defaultValue="funil" className="mt-6">
+      <Tabs defaultValue="dashboard" className="mt-6">
         <TabsList>
+          <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
           <TabsTrigger value="funil">Funil</TabsTrigger>
           <TabsTrigger value="tarefas">Próximas ações</TabsTrigger>
           <TabsTrigger value="leads">Base de leads</TabsTrigger>
         </TabsList>
+        <TabsContent value="dashboard" className="mt-4 space-y-5">
+          <div className="panel grid gap-4 p-4 md:grid-cols-2 xl:grid-cols-5">
+            <Field label="De">
+              <Input
+                type="date"
+                value={dashboardFrom}
+                max={dashboardTo}
+                onChange={(event) => setDashboardFrom(event.target.value)}
+              />
+            </Field>
+            <Field label="Até">
+              <Input
+                type="date"
+                value={dashboardTo}
+                min={dashboardFrom}
+                onChange={(event) => setDashboardTo(event.target.value)}
+              />
+            </Field>
+            <Field label="Origem">
+              <Select value={sourceFilter} onValueChange={setSourceFilter}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="todos">Todas</SelectItem>
+                  {sourceOptions.map((source) => (
+                    <SelectItem key={source} value={source}>
+                      {source}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Temperatura">
+              <Select value={temperatureFilter} onValueChange={setTemperatureFilter}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="todos">Todas</SelectItem>
+                  <SelectItem value="frio">❄️ Frio</SelectItem>
+                  <SelectItem value="morno">🌤️ Morno</SelectItem>
+                  <SelectItem value="quente">🔥 Quente</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Responsável">
+              <Select value={ownerFilter} onValueChange={setOwnerFilter}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="todos">Todos</SelectItem>
+                  {(responsibles.data ?? []).map((profile) => (
+                    <SelectItem key={profile.id} value={profile.id}>
+                      {profile.full_name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <Metric label="Leads recebidos" value={String(dashboard.leads)} />
+            <Metric label="Negociações ativas" value={String(dashboard.active)} />
+            <Metric label="Em follow-up" value={String(dashboard.followUps)} />
+            <Metric label="Vendas concluídas" value={String(dashboard.won)} />
+            <Metric
+              label="Taxa de conversão"
+              value={`${(dashboard.conversion * 100).toFixed(1).replace(".", ",")}%`}
+            />
+            <Metric label="Faturamento vendido" value={formatBRL(dashboard.revenue)} />
+            <Metric label="Ticket médio" value={formatBRL(dashboard.ticket)} />
+            <Metric
+              label="Ações vencidas"
+              value={String(dashboard.overdue)}
+              alert={dashboard.overdue > 0}
+            />
+          </div>
+
+          <div className="grid gap-5 xl:grid-cols-2">
+            <section className="panel p-5">
+              <div className="mb-4">
+                <h3 className="font-semibold">Evolução comercial</h3>
+                <p className="text-xs text-muted-foreground">
+                  Leads e vendas por mês no período selecionado
+                </p>
+              </div>
+              <div className="h-72">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart
+                    data={dashboard.months}
+                    margin={{ left: 0, right: 12, top: 10, bottom: 0 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="label" tickLine={false} axisLine={false} />
+                    <YAxis allowDecimals={false} tickLine={false} axisLine={false} width={30} />
+                    <Tooltip />
+                    <Line
+                      type="monotone"
+                      dataKey="leads"
+                      name="Leads"
+                      stroke="#2563eb"
+                      strokeWidth={3}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="vendas"
+                      name="Vendas"
+                      stroke="#16a34a"
+                      strokeWidth={3}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </section>
+            <section className="panel p-5">
+              <div className="mb-4">
+                <h3 className="font-semibold">Desempenho por origem</h3>
+                <p className="text-xs text-muted-foreground">
+                  Quantidade de leads por canal de aquisição
+                </p>
+              </div>
+              <div className="h-72">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={dashboard.origins.slice(0, 8)}
+                    layout="vertical"
+                    margin={{ left: 10, right: 20 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                    <XAxis type="number" allowDecimals={false} tickLine={false} axisLine={false} />
+                    <YAxis
+                      type="category"
+                      dataKey="origem"
+                      width={115}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <Tooltip />
+                    <Bar dataKey="leads" name="Leads" fill="#2563eb" radius={[0, 6, 6, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </section>
+          </div>
+
+          <div className="grid gap-5 xl:grid-cols-3">
+            <Breakdown title="Etapas do funil" items={dashboard.stageData} />
+            <Breakdown title="Temperatura dos leads" items={dashboard.temperatureData} />
+            <section className="panel p-5">
+              <h3 className="font-semibold">Atenção comercial</h3>
+              <div className="mt-4 space-y-3 text-sm">
+                <div className="flex justify-between rounded-md bg-muted/50 p-3">
+                  <span>Leads sem próxima ação</span>
+                  <strong>{dashboard.withoutAction}</strong>
+                </div>
+                <div className="flex justify-between rounded-md bg-muted/50 p-3">
+                  <span>Ações vencidas ou para hoje</span>
+                  <strong className={dashboard.overdue ? "text-destructive" : ""}>
+                    {dashboard.overdue}
+                  </strong>
+                </div>
+                {dashboard.urgentTasks.slice(0, 4).map((task) => (
+                  <div key={task.id} className="border-l-2 border-warning pl-3">
+                    <p className="font-medium">{task.title}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Prazo: {formatDate(task.due_date)}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+        </TabsContent>
         <TabsContent value="funil" className="mt-4 overflow-x-auto pb-4">
           {opportunities.isLoading ? (
             <Skeleton className="h-96 min-w-[1000px]" />
@@ -1433,6 +1763,49 @@ function Metric({
     </div>
   );
 }
+
+function Breakdown({
+  title,
+  items,
+}: {
+  title: string;
+  items: Array<{ label: string; value: number }>;
+}) {
+  const total = items.reduce((sum, item) => sum + item.value, 0);
+  const largest = Math.max(...items.map((item) => item.value), 1);
+
+  return (
+    <section className="panel p-5">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="font-semibold">{title}</h3>
+        <span className="text-xs text-muted-foreground">Total: {total}</span>
+      </div>
+      <div className="mt-4 space-y-3">
+        {items.length === 0 ? (
+          <p className="rounded-md bg-muted/50 p-4 text-sm text-muted-foreground">
+            Nenhum dado no período selecionado.
+          </p>
+        ) : (
+          items.map((item) => (
+            <div key={item.label} className="space-y-1.5">
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <span className="truncate">{item.label}</span>
+                <strong>{item.value}</strong>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full rounded-full bg-primary transition-[width]"
+                  style={{ width: `${Math.max((item.value / largest) * 100, 4)}%` }}
+                />
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
 function Field({
   label,
   children,
