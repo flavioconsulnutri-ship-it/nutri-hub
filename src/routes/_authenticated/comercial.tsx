@@ -29,11 +29,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { supabase } from "@/integrations/supabase/client";
 import type { Database } from "@/integrations/supabase/types";
+import { countryFlag, formatNationalPhone, phoneCountries } from "@/lib/countries";
 import { formatBRL, formatDate, todayISO } from "@/lib/format";
 
 type FunnelStage = Database["public"]["Enums"]["funnel_stage"];
 type LeadRow = Database["public"]["Tables"]["leads"]["Row"];
-const leadSources = [
+const alphabetical = (items: string[]) => [...items].sort((a, b) => a.localeCompare(b, "pt-BR"));
+const leadSources = alphabetical([
   "Instagram",
   "WhatsApp",
   "Google",
@@ -43,10 +45,9 @@ const leadSources = [
   "Evento/Palestra",
   "Tráfego pago",
   "Orgânico",
-  "Outro",
   "Não identificado",
-];
-const leadGoals = [
+]);
+const leadGoals = alphabetical([
   "Emagrecimento",
   "Hipertrofia",
   "Reeducação alimentar",
@@ -58,9 +59,8 @@ const leadGoals = [
   "Performance esportiva",
   "Gestação e fertilidade",
   "Nutrição vegetariana/vegana",
-  "Outro",
-];
-const actionOptions = [
+]);
+const actionOptions = alphabetical([
   "Responder primeiro contato",
   "Enviar mensagem",
   "Fazer ligação",
@@ -92,18 +92,7 @@ const actionOptions = [
   "Encaminhar para atendimento",
   "Atualizar cadastro",
   "Aguardar retorno do lead",
-  "Criar ação personalizada",
-];
-const countryCodes = [
-  { value: "+55", label: "🇧🇷 +55" },
-  { value: "+351", label: "🇵🇹 +351" },
-  { value: "+1", label: "🇺🇸/🇨🇦 +1" },
-  { value: "+34", label: "🇪🇸 +34" },
-  { value: "+44", label: "🇬🇧 +44" },
-  { value: "+54", label: "🇦🇷 +54" },
-  { value: "+56", label: "🇨🇱 +56" },
-  { value: "+57", label: "🇨🇴 +57" },
-];
+]);
 const stages: Array<{ value: FunnelStage; label: string; helper: string; tone: string }> = [
   {
     value: "novo_lead",
@@ -572,9 +561,9 @@ function EditLeadDialog({ lead, onDone }: { lead: LeadRow; onDone: () => void })
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="lead_novo">Lead novo</SelectItem>
               <SelectItem value="ex_paciente">Ex-paciente</SelectItem>
               <SelectItem value="indicacao">Indicação</SelectItem>
+              <SelectItem value="lead_novo">Lead novo</SelectItem>
             </SelectContent>
           </Select>
         </Field>
@@ -628,7 +617,7 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
   const [form, setForm] = useState({
     full_name: "",
     phone: "",
-    phone_country: "+55",
+    phone_country: "BR",
     email: "",
     lead_type: "lead_novo",
     source: "",
@@ -696,7 +685,7 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
         .insert({
           org_id: profile.org_id,
           full_name: form.full_name.trim(),
-          phone: `${form.phone_country}${form.phone.replace(/\D/g, "")}`,
+          phone: `${phoneCountries.find((country) => country.iso === form.phone_country)?.dial ?? "+55"}${form.phone.replace(/\D/g, "")}`,
           email: form.email || null,
           lead_type: form.lead_type,
           source: form.source || null,
@@ -794,15 +783,21 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
           <div className="flex gap-2">
             <Select
               value={form.phone_country}
-              onValueChange={(value) => setForm({ ...form, phone_country: value })}
+              onValueChange={(value) =>
+                setForm({
+                  ...form,
+                  phone_country: value,
+                  phone: formatNationalPhone(form.phone, value),
+                })
+              }
             >
-              <SelectTrigger className="w-32">
+              <SelectTrigger className="w-52">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {countryCodes.map((country) => (
-                  <SelectItem key={country.value} value={country.value}>
-                    {country.label}
+                {phoneCountries.map((country) => (
+                  <SelectItem key={country.iso} value={country.iso}>
+                    {countryFlag(country.iso)} {country.name} ({country.dial})
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -811,7 +806,12 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
               inputMode="tel"
               placeholder="DDD + número"
               value={form.phone}
-              onChange={(e) => setForm({ ...form, phone: e.target.value })}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  phone: formatNationalPhone(e.target.value, form.phone_country),
+                })
+              }
             />
           </div>
         </Field>
@@ -828,9 +828,9 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="lead_novo">Lead novo</SelectItem>
               <SelectItem value="ex_paciente">Ex-paciente</SelectItem>
               <SelectItem value="indicacao">Indicação</SelectItem>
+              <SelectItem value="lead_novo">Lead novo</SelectItem>
             </SelectContent>
           </Select>
         </Field>
@@ -843,7 +843,7 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
               <SelectValue placeholder="Selecione a origem" />
             </SelectTrigger>
             <SelectContent>
-              {leadSources.map((source) => (
+              {[...leadSources, "Outro"].map((source) => (
                 <SelectItem key={source} value={source}>
                   {source}
                 </SelectItem>
@@ -866,9 +866,9 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="frio">Frio</SelectItem>
-              <SelectItem value="morno">Morno</SelectItem>
-              <SelectItem value="quente">Quente</SelectItem>
+              <SelectItem value="frio">❄️ Frio</SelectItem>
+              <SelectItem value="morno">🌤️ Morno</SelectItem>
+              <SelectItem value="quente">🔥 Quente</SelectItem>
             </SelectContent>
           </Select>
         </Field>
@@ -891,7 +891,7 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
         </Field>
         <Field label="Objetivos" className="sm:col-span-2">
           <div className="grid gap-2 rounded-md border p-3 sm:grid-cols-2">
-            {leadGoals.map((goal) => (
+            {[...leadGoals, "Outro"].map((goal) => (
               <label key={goal} className="flex cursor-pointer items-center gap-2 text-sm">
                 <Checkbox
                   checked={selectedGoals.includes(goal)}
@@ -925,12 +925,10 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {[
-                ...actionOptions.filter((action) => action !== "Criar ação personalizada"),
-                ...(customActions.data ?? []).map((action) => action.name),
-                "Criar ação personalizada",
-              ]
+              {[...actionOptions, ...(customActions.data ?? []).map((action) => action.name)]
                 .filter((action, index, list) => list.indexOf(action) === index)
+                .sort((a, b) => a.localeCompare(b, "pt-BR"))
+                .concat("Criar ação personalizada")
                 .map((action) => (
                   <SelectItem key={action} value={action}>
                     {action}
