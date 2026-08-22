@@ -674,7 +674,27 @@ function CommercialPage() {
             </section>
           </div>
         </TabsContent>
-        <TabsContent value="funil" className="mt-4 overflow-x-auto pb-4">
+        <TabsContent
+          value="funil"
+          className="mt-4 overflow-x-auto pb-4"
+          onDragOver={(event) => {
+            if (!didDrag.current) return;
+            event.preventDefault();
+            const container = event.currentTarget;
+            const bounds = container.getBoundingClientRect();
+            const edgeSize = Math.min(160, bounds.width * 0.2);
+            const distanceFromLeft = event.clientX - bounds.left;
+            const distanceFromRight = bounds.right - event.clientX;
+
+            if (distanceFromLeft < edgeSize) {
+              const intensity = 1 - Math.max(distanceFromLeft, 0) / edgeSize;
+              container.scrollLeft -= Math.ceil(12 + intensity * 40);
+            } else if (distanceFromRight < edgeSize) {
+              const intensity = 1 - Math.max(distanceFromRight, 0) / edgeSize;
+              container.scrollLeft += Math.ceil(12 + intensity * 40);
+            }
+          }}
+        >
           {opportunities.isLoading ? (
             <Skeleton className="h-96 min-w-[1000px]" />
           ) : (opportunities.data ?? []).length === 0 ? (
