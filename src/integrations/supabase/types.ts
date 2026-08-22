@@ -566,24 +566,151 @@ export type Database = {
           },
         ]
       }
+      leads: {
+        Row: {
+          converted_at: string | null
+          converted_patient_id: string | null
+          created_at: string
+          email: string | null
+          full_name: string
+          id: string
+          lead_type: string
+          main_goal: string | null
+          notes: string | null
+          org_id: string
+          owner_id: string | null
+          phone: string
+          referred_by: string | null
+          source: string | null
+          updated_at: string
+        }
+        Insert: {
+          converted_at?: string | null
+          converted_patient_id?: string | null
+          created_at?: string
+          email?: string | null
+          full_name: string
+          id?: string
+          lead_type?: string
+          main_goal?: string | null
+          notes?: string | null
+          org_id: string
+          owner_id?: string | null
+          phone: string
+          referred_by?: string | null
+          source?: string | null
+          updated_at?: string
+        }
+        Update: {
+          converted_at?: string | null
+          converted_patient_id?: string | null
+          created_at?: string
+          email?: string | null
+          full_name?: string
+          id?: string
+          lead_type?: string
+          main_goal?: string | null
+          notes?: string | null
+          org_id?: string
+          owner_id?: string | null
+          phone?: string
+          referred_by?: string | null
+          source?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "leads_converted_patient_id_fkey"
+            columns: ["converted_patient_id"]
+            isOneToOne: false
+            referencedRelation: "patients"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "leads_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      crm_tasks: {
+        Row: {
+          assigned_to: string | null
+          completed_at: string | null
+          created_at: string
+          due_date: string
+          id: string
+          opportunity_id: string
+          org_id: string
+          sequence_key: string | null
+          status: string
+          title: string
+        }
+        Insert: {
+          assigned_to?: string | null
+          completed_at?: string | null
+          created_at?: string
+          due_date: string
+          id?: string
+          opportunity_id: string
+          org_id: string
+          sequence_key?: string | null
+          status?: string
+          title: string
+        }
+        Update: {
+          assigned_to?: string | null
+          completed_at?: string | null
+          created_at?: string
+          due_date?: string
+          id?: string
+          opportunity_id?: string
+          org_id?: string
+          sequence_key?: string | null
+          status?: string
+          title?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "crm_tasks_opportunity_id_fkey"
+            columns: ["opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "opportunities"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "crm_tasks_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       opportunities: {
         Row: {
           amount: number
           closed_at: string | null
           created_at: string
           id: string
+          lead_id: string | null
           loss_reason: string | null
           next_action: string | null
           next_action_date: string | null
           notes: string | null
           org_id: string
           owner_id: string | null
+          objection: string | null
+          paralysis_reason: string | null
           patient_id: string | null
           payment_method: Database["public"]["Enums"]["payment_method"] | null
           plan_id: string | null
           probability: number
           source: string | null
           stage: Database["public"]["Enums"]["funnel_stage"]
+          stalled_from_stage: Database["public"]["Enums"]["funnel_stage"] | null
           title: string
           updated_at: string
         }
@@ -592,18 +719,22 @@ export type Database = {
           closed_at?: string | null
           created_at?: string
           id?: string
+          lead_id?: string | null
           loss_reason?: string | null
           next_action?: string | null
           next_action_date?: string | null
           notes?: string | null
           org_id: string
           owner_id?: string | null
+          objection?: string | null
+          paralysis_reason?: string | null
           patient_id?: string | null
           payment_method?: Database["public"]["Enums"]["payment_method"] | null
           plan_id?: string | null
           probability?: number
           source?: string | null
           stage?: Database["public"]["Enums"]["funnel_stage"]
+          stalled_from_stage?: Database["public"]["Enums"]["funnel_stage"] | null
           title: string
           updated_at?: string
         }
@@ -612,22 +743,33 @@ export type Database = {
           closed_at?: string | null
           created_at?: string
           id?: string
+          lead_id?: string | null
           loss_reason?: string | null
           next_action?: string | null
           next_action_date?: string | null
           notes?: string | null
           org_id?: string
           owner_id?: string | null
+          objection?: string | null
+          paralysis_reason?: string | null
           patient_id?: string | null
           payment_method?: Database["public"]["Enums"]["payment_method"] | null
           plan_id?: string | null
           probability?: number
           source?: string | null
           stage?: Database["public"]["Enums"]["funnel_stage"]
+          stalled_from_stage?: Database["public"]["Enums"]["funnel_stage"] | null
           title?: string
           updated_at?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "opportunities_lead_id_fkey"
+            columns: ["lead_id"]
+            isOneToOne: false
+            referencedRelation: "leads"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "opportunities_org_id_fkey"
             columns: ["org_id"]
@@ -1365,6 +1507,10 @@ export type Database = {
         | "ganha"
         | "perdida"
         | "reativacao_futura"
+        | "pre_consulta"
+        | "proposta"
+        | "follow_up_infinito"
+        | "aguardando_pagamento"
       patient_status:
         | "lead"
         | "avaliacao_comercial"
@@ -1565,6 +1711,10 @@ export const Constants = {
         "ganha",
         "perdida",
         "reativacao_futura",
+        "pre_consulta",
+        "proposta",
+        "follow_up_infinito",
+        "aguardando_pagamento",
       ],
       patient_status: [
         "lead",

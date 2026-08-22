@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { CheckCircle2, Clock3, Phone, Plus, UserRound } from "lucide-react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { EmptyState, PageBody, PageHeader } from "@/components/AppShell";
@@ -23,199 +24,403 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { supabase } from "@/integrations/supabase/client";
 import type { Database } from "@/integrations/supabase/types";
-import { formatBRL, formatDate } from "@/lib/format";
+import { formatBRL, formatDate, todayISO } from "@/lib/format";
 
 type FunnelStage = Database["public"]["Enums"]["funnel_stage"];
-
-const stages: Array<{ value: FunnelStage; label: string }> = [
-  { value: "novo_lead", label: "Novo lead" },
-  { value: "contato_iniciado", label: "Contato iniciado" },
-  { value: "qualificacao", label: "Qualificação" },
-  { value: "reuniao_agendada", label: "Reunião agendada" },
-  { value: "proposta_enviada", label: "Proposta enviada" },
-  { value: "follow_up", label: "Follow-up" },
-  { value: "negociacao", label: "Negociação" },
-  { value: "ganha", label: "Ganha" },
-  { value: "perdida", label: "Perdida" },
-  { value: "reativacao_futura", label: "Reativação futura" },
+const stages: Array<{ value: FunnelStage; label: string; helper: string; tone: string }> = [
+  {
+    value: "novo_lead",
+    label: "Lead novo",
+    helper: "Mandou mensagem",
+    tone: "border-blue-300 bg-blue-50/50",
+  },
+  {
+    value: "qualificacao",
+    label: "Qualificação",
+    helper: "Objetivo, dor e momento",
+    tone: "border-blue-300 bg-blue-50/50",
+  },
+  {
+    value: "pre_consulta",
+    label: "Pré-consulta",
+    helper: "Conversa comercial marcada",
+    tone: "border-blue-300 bg-blue-50/50",
+  },
+  {
+    value: "proposta",
+    label: "Proposta",
+    helper: "Plano, valor e condições",
+    tone: "border-blue-300 bg-blue-50/50",
+  },
+  {
+    value: "follow_up",
+    label: "Follow-up",
+    helper: "Negociação recente",
+    tone: "border-amber-300 bg-amber-50/60",
+  },
+  {
+    value: "reativacao_futura",
+    label: "Reativação",
+    helper: "30, 60 e 90 dias",
+    tone: "border-violet-300 bg-violet-50/60",
+  },
+  {
+    value: "follow_up_infinito",
+    label: "Follow-up infinito",
+    helper: "Base fria",
+    tone: "border-slate-300 bg-slate-50/70",
+  },
+  {
+    value: "aguardando_pagamento",
+    label: "Aguardando pagamento",
+    helper: "Aceitou, falta pagar",
+    tone: "border-orange-300 bg-orange-50/60",
+  },
+  {
+    value: "ganha",
+    label: "Venda concluída",
+    helper: "Pagamento confirmado",
+    tone: "border-emerald-300 bg-emerald-50/60",
+  },
+  {
+    value: "perdida",
+    label: "Perdido",
+    helper: "Recusa ou sem perfil",
+    tone: "border-red-300 bg-red-50/60",
+  },
 ];
+const activeStages = stages
+  .filter((s) => !["ganha", "perdida", "follow_up_infinito"].includes(s.value))
+  .map((s) => s.value);
 
 export const Route = createFileRoute("/_authenticated/comercial")({
-  head: () => ({
-    meta: [
-      { title: "Comercial e vendas — Consultório de Nutrição" },
-      { name: "description", content: "Funil comercial integrado a pacientes, planos e vendas." },
-    ],
-  }),
+  head: () => ({ meta: [{ title: "CRM comercial — Nutri Hub" }] }),
   component: CommercialPage,
 });
 
 function CommercialPage() {
   const [open, setOpen] = useState(false);
   const queryClient = useQueryClient();
-  const { data, isLoading } = useQuery({
+  const opportunities = useQuery({
     queryKey: ["opportunities"],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("opportunities")
-        .select("*, patients(full_name), plans(name)")
+        .select("*, leads(full_name, phone, lead_type, main_goal), plans(name)")
         .order("created_at", { ascending: false });
+      if (error) throw new Error(error.message);
+      return data;
+    },
+  });
+  const leads = useQuery({
+    queryKey: ["leads"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("leads")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (error) throw new Error(error.message);
+      return data;
+    },
+  });
+  const tasks = useQuery({
+    queryKey: ["crm-tasks"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("crm_tasks")
+        .select("*, opportunities(title, leads(full_name))")
+        .eq("status", "pendente")
+        .order("due_date")
+        .limit(40);
       if (error) throw new Error(error.message);
       return data;
     },
   });
 
   const move = useMutation({
-    mutationFn: async ({ id, stage }: { id: string; stage: FunnelStage }) => {
+    mutationFn: async ({ id, from, to }: { id: string; from: FunnelStage; to: FunnelStage }) => {
+      let lossReason: string | null = null;
+      if (to === "perdida") {
+        lossReason =
+          window.prompt("Motivo da perda (recusa, sem perfil, contato inválido...):")?.trim() ||
+          null;
+        if (!lossReason)
+          throw new Error("Perdido exige um motivo claro. Silêncio deve ir para Reativação.");
+      }
+      const recovering = ["follow_up", "reativacao_futura", "follow_up_infinito"].includes(to);
       const { error } = await supabase
         .from("opportunities")
         .update({
-          stage,
-          closed_at: ["ganha", "perdida"].includes(stage) ? new Date().toISOString() : null,
+          stage: to,
+          stalled_from_stage: recovering ? from : null,
+          loss_reason: lossReason,
+          closed_at: ["ganha", "perdida"].includes(to) ? new Date().toISOString() : null,
         })
         .eq("id", id);
       if (error) throw new Error(error.message);
     },
     onSuccess: async () => {
-      toast.success("Etapa atualizada.");
-      await queryClient.invalidateQueries({ queryKey: ["opportunities"] });
+      toast.success("Etapa atualizada e régua de tarefas recalculada.");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["opportunities"] }),
+        queryClient.invalidateQueries({ queryKey: ["crm-tasks"] }),
+      ]);
     },
-    onError: (e: Error) => toast.error(e.message),
+    onError: (error: Error) => toast.error(error.message),
   });
+  const completeTask = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase
+        .from("crm_tasks")
+        .update({ status: "concluida", completed_at: new Date().toISOString() })
+        .eq("id", id);
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ["crm-tasks"] }),
+  });
+  const metrics = useMemo(() => {
+    const all = opportunities.data ?? [];
+    return {
+      active: all.filter((i) => activeStages.includes(i.stage)).length,
+      withoutAction: all.filter((i) => activeStages.includes(i.stage) && !i.next_action_date)
+        .length,
+      awaiting: all
+        .filter((i) => i.stage === "aguardando_pagamento")
+        .reduce((sum, i) => sum + Number(i.amount), 0),
+      dueToday: (tasks.data ?? []).filter((t) => t.due_date <= todayISO()).length,
+    };
+  }, [opportunities.data, tasks.data]);
 
   return (
     <PageBody>
       <PageHeader
-        title="Comercial e vendas"
-        description="Acompanhe cada oportunidade do primeiro contato até a venda ou reativação."
+        title="CRM comercial"
+        description="Um lead por pessoa, uma etapa atual e toda negociação ativa com próxima ação e data."
         actions={
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
-              <Button>Nova oportunidade</Button>
+              <Button>
+                <Plus className="size-4" /> Novo lead
+              </Button>
             </DialogTrigger>
-            <NewOpportunity onDone={() => setOpen(false)} />
+            <NewLeadDialog onDone={() => setOpen(false)} />
           </Dialog>
         }
       />
-
-      <div className="mt-6 overflow-x-auto pb-4">
-        {isLoading ? (
-          <div className="grid min-w-[900px] grid-cols-4 gap-4">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <Skeleton key={i} className="h-80 rounded-xl" />
-            ))}
-          </div>
-        ) : (data ?? []).length === 0 ? (
-          <EmptyState
-            title="Nenhuma oportunidade"
-            description="Cadastre o primeiro lead para iniciar o funil comercial."
-          />
-        ) : (
-          <div className="grid min-w-[2100px] grid-cols-10 gap-3">
-            {stages.map((stage) => {
-              const items = (data ?? []).filter((item) => item.stage === stage.value);
-              return (
-                <section
-                  key={stage.value}
-                  className="rounded-xl border border-border bg-muted/30 p-3"
-                >
-                  <div className="mb-3 flex items-center justify-between gap-2">
-                    <h2 className="text-sm font-semibold">{stage.label}</h2>
-                    <span className="rounded-full bg-card px-2 py-0.5 text-xs text-muted-foreground">
-                      {items.length}
-                    </span>
-                  </div>
-                  <div className="space-y-3">
-                    {items.map((item) => (
-                      <article
-                        key={item.id}
-                        className="rounded-lg border border-border bg-card p-3 shadow-sm"
-                      >
-                        <p className="text-sm font-medium">{item.title}</p>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {(item.patients as { full_name: string } | null)?.full_name ??
-                            "Lead sem paciente"}
-                        </p>
-                        <p className="mt-3 text-sm font-semibold">{formatBRL(item.amount)}</p>
-                        {(item.plans as { name: string } | null)?.name ? (
-                          <p className="mt-1 text-xs text-muted-foreground">
-                            {(item.plans as { name: string }).name}
-                          </p>
-                        ) : null}
-                        {item.next_action_date ? (
-                          <p className="mt-2 text-xs text-muted-foreground">
-                            Próxima ação: {formatDate(item.next_action_date)}
-                          </p>
-                        ) : null}
-                        <Select
-                          value={item.stage}
-                          onValueChange={(value) =>
-                            move.mutate({ id: item.id, stage: value as FunnelStage })
-                          }
-                        >
-                          <SelectTrigger className="mt-3 h-8 text-xs">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {stages.map((option) => (
-                              <SelectItem key={option.value} value={option.value}>
-                                {option.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </article>
-                    ))}
-                  </div>
-                </section>
-              );
-            })}
-          </div>
-        )}
+      <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Metric label="Negociações ativas" value={String(metrics.active)} />
+        <Metric
+          label="Sem próxima ação"
+          value={String(metrics.withoutAction)}
+          alert={metrics.withoutAction > 0}
+        />
+        <Metric label="Aguardando pagamento" value={formatBRL(metrics.awaiting)} />
+        <Metric
+          label="Tarefas vencendo hoje"
+          value={String(metrics.dueToday)}
+          alert={metrics.dueToday > 0}
+        />
       </div>
+      <Tabs defaultValue="funil" className="mt-6">
+        <TabsList>
+          <TabsTrigger value="funil">Funil</TabsTrigger>
+          <TabsTrigger value="tarefas">Próximas ações</TabsTrigger>
+          <TabsTrigger value="leads">Base de leads</TabsTrigger>
+        </TabsList>
+        <TabsContent value="funil" className="mt-4 overflow-x-auto pb-4">
+          {opportunities.isLoading ? (
+            <Skeleton className="h-96 min-w-[1000px]" />
+          ) : (opportunities.data ?? []).length === 0 ? (
+            <EmptyState
+              title="Nenhuma negociação"
+              description="Cadastre o primeiro lead para iniciar o fluxo comercial."
+            />
+          ) : (
+            <div className="grid min-w-[2300px] grid-cols-10 gap-3">
+              {stages.map((stage) => {
+                const items = (opportunities.data ?? []).filter((i) => i.stage === stage.value);
+                return (
+                  <section key={stage.value} className={`rounded-xl border p-3 ${stage.tone}`}>
+                    <div className="mb-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <h2 className="text-sm font-semibold">{stage.label}</h2>
+                        <span className="rounded-full bg-white/80 px-2 py-0.5 text-xs">
+                          {items.length}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">{stage.helper}</p>
+                    </div>
+                    <div className="space-y-3">
+                      {items.map((item) => {
+                        const lead = item.leads as {
+                          full_name: string;
+                          phone: string;
+                          lead_type: string;
+                          main_goal: string | null;
+                        } | null;
+                        return (
+                          <article
+                            key={item.id}
+                            className="rounded-lg border border-border bg-card p-3 shadow-sm"
+                          >
+                            <p className="text-sm font-semibold">{lead?.full_name ?? item.title}</p>
+                            <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+                              <Phone className="size-3" /> {lead?.phone ?? "Sem telefone"}
+                            </p>
+                            {lead?.main_goal ? (
+                              <p className="mt-2 line-clamp-2 text-xs">{lead.main_goal}</p>
+                            ) : null}
+                            <div className="mt-3 flex items-center justify-between text-xs">
+                              <span className="font-medium">{formatBRL(item.amount)}</span>
+                              <span
+                                className={
+                                  item.next_action_date
+                                    ? "text-muted-foreground"
+                                    : "font-medium text-destructive"
+                                }
+                              >
+                                {item.next_action_date
+                                  ? formatDate(item.next_action_date)
+                                  : "Sem ação"}
+                              </span>
+                            </div>
+                            <Select
+                              value={item.stage}
+                              onValueChange={(to) =>
+                                move.mutate({
+                                  id: item.id,
+                                  from: item.stage,
+                                  to: to as FunnelStage,
+                                })
+                              }
+                            >
+                              <SelectTrigger className="mt-3 h-8 text-xs">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {stages.map((o) => (
+                                  <SelectItem key={o.value} value={o.value}>
+                                    {o.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  </section>
+                );
+              })}
+            </div>
+          )}
+        </TabsContent>
+        <TabsContent value="tarefas" className="mt-4">
+          {(tasks.data ?? []).length === 0 ? (
+            <EmptyState
+              title="Nenhuma tarefa pendente"
+              description="As réguas automáticas aparecerão aqui ao cadastrar ou mover negociações."
+            />
+          ) : (
+            <div className="panel divide-y divide-border">
+              {(tasks.data ?? []).map((task) => {
+                const opp = task.opportunities as {
+                  title: string;
+                  leads: { full_name: string } | null;
+                } | null;
+                return (
+                  <div
+                    key={task.id}
+                    className="flex flex-wrap items-center justify-between gap-3 p-4"
+                  >
+                    <div>
+                      <p className="text-sm font-medium">{task.title}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {opp?.leads?.full_name ?? opp?.title} · {formatDate(task.due_date)}
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => completeTask.mutate(task.id)}
+                    >
+                      <CheckCircle2 className="size-4" /> Concluir
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </TabsContent>
+        <TabsContent value="leads" className="mt-4">
+          {(leads.data ?? []).length === 0 ? (
+            <EmptyState
+              title="Base de leads vazia"
+              description="Leads permanecem separados dos pacientes até o pagamento ser confirmado."
+            />
+          ) : (
+            <div className="panel overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-3">Lead</th>
+                    <th className="px-4 py-3">Tipo</th>
+                    <th className="hidden px-4 py-3 md:table-cell">Origem</th>
+                    <th className="hidden px-4 py-3 lg:table-cell">Objetivo</th>
+                    <th className="px-4 py-3">Entrada</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(leads.data ?? []).map((lead) => (
+                    <tr key={lead.id} className="border-t border-border">
+                      <td className="px-4 py-3">
+                        <p className="font-medium">{lead.full_name}</p>
+                        <p className="text-xs text-muted-foreground">{lead.phone}</p>
+                      </td>
+                      <td className="px-4 py-3">
+                        {lead.lead_type === "ex_paciente"
+                          ? "Ex-paciente"
+                          : lead.lead_type === "indicacao"
+                            ? "Indicação"
+                            : "Lead novo"}
+                      </td>
+                      <td className="hidden px-4 py-3 md:table-cell">{lead.source || "—"}</td>
+                      <td className="hidden max-w-sm truncate px-4 py-3 lg:table-cell">
+                        {lead.main_goal || "—"}
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {formatDate(lead.created_at)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
     </PageBody>
   );
 }
 
-function NewOpportunity({ onDone }: { onDone: () => void }) {
+function NewLeadDialog({ onDone }: { onDone: () => void }) {
   const queryClient = useQueryClient();
   const [form, setForm] = useState({
-    title: "",
-    patient_id: "none",
-    plan_id: "none",
-    amount: "",
+    full_name: "",
+    phone: "",
+    email: "",
+    lead_type: "lead_novo",
     source: "",
-    next_action: "",
-    next_action_date: "",
+    referred_by: "",
+    main_goal: "",
     notes: "",
+    next_action: "Responder e entender objetivo",
+    next_action_date: todayISO(),
   });
-  const { data: patients } = useQuery({
-    queryKey: ["patients-select"],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("patients")
-        .select("id, full_name, org_id")
-        .order("full_name");
-      if (error) throw new Error(error.message);
-      return data;
-    },
-  });
-  const { data: plans } = useQuery({
-    queryKey: ["plans-select"],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("plans")
-        .select("id, name, card_total")
-        .eq("active", true)
-        .order("name");
-      if (error) throw new Error(error.message);
-      return data;
-    },
-  });
-
   const mutation = useMutation({
     mutationFn: async () => {
       const { data: userData } = await supabase.auth.getUser();
@@ -225,105 +430,109 @@ function NewOpportunity({ onDone }: { onDone: () => void }) {
         .eq("id", userData.user!.id)
         .maybeSingle();
       if (!profile) throw new Error("Perfil não encontrado.");
+      const { data: lead, error: leadError } = await supabase
+        .from("leads")
+        .insert({
+          org_id: profile.org_id,
+          full_name: form.full_name.trim(),
+          phone: form.phone.trim(),
+          email: form.email || null,
+          lead_type: form.lead_type,
+          source: form.source || null,
+          referred_by: form.referred_by || null,
+          main_goal: form.main_goal || null,
+          notes: form.notes || null,
+          owner_id: userData.user!.id,
+        })
+        .select("id")
+        .single();
+      if (leadError) throw new Error(leadError.message);
+      const stage: FunnelStage =
+        form.lead_type === "ex_paciente" ? "reativacao_futura" : "novo_lead";
       const { error } = await supabase.from("opportunities").insert({
         org_id: profile.org_id,
-        title: form.title.trim(),
-        patient_id: form.patient_id === "none" ? null : form.patient_id,
-        plan_id: form.plan_id === "none" ? null : form.plan_id,
-        amount: Number(form.amount || 0),
+        lead_id: lead.id,
+        title: `Negociação — ${form.full_name.trim()}`,
+        stage,
         source: form.source || null,
-        next_action: form.next_action || null,
-        next_action_date: form.next_action_date || null,
-        notes: form.notes || null,
         owner_id: userData.user!.id,
+        next_action: form.next_action,
+        next_action_date: form.next_action_date,
       });
       if (error) throw new Error(error.message);
     },
     onSuccess: async () => {
-      toast.success("Oportunidade criada.");
-      await queryClient.invalidateQueries({ queryKey: ["opportunities"] });
+      toast.success("Lead cadastrado e negociação iniciada.");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["leads"] }),
+        queryClient.invalidateQueries({ queryKey: ["opportunities"] }),
+        queryClient.invalidateQueries({ queryKey: ["crm-tasks"] }),
+      ]);
       onDone();
     },
     onError: (e: Error) => toast.error(e.message),
   });
-
   return (
-    <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+    <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
       <DialogHeader>
-        <DialogTitle>Nova oportunidade</DialogTitle>
+        <DialogTitle>Novo lead</DialogTitle>
       </DialogHeader>
       <form
         className="grid gap-4 sm:grid-cols-2"
         onSubmit={(e) => {
           e.preventDefault();
-          if (!form.title.trim()) return toast.error("Informe o título.");
+          if (!form.full_name.trim() || !form.phone.trim())
+            return toast.error("Nome e telefone são obrigatórios.");
+          if (!form.next_action_date)
+            return toast.error("Todo lead ativo precisa de próxima ação e data.");
           mutation.mutate();
         }}
       >
-        <Field label="Título" className="sm:col-span-2">
+        <Field label="Nome" className="sm:col-span-2">
           <Input
-            value={form.title}
-            onChange={(e) => setForm({ ...form, title: e.target.value })}
-            placeholder="Ex.: Renovação Premium"
+            value={form.full_name}
+            onChange={(e) => setForm({ ...form, full_name: e.target.value })}
           />
         </Field>
-        <Field label="Paciente">
-          <Select
-            value={form.patient_id}
-            onValueChange={(v) => setForm({ ...form, patient_id: v })}
-          >
+        <Field label="Telefone">
+          <Input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+        </Field>
+        <Field label="E-mail">
+          <Input
+            type="email"
+            value={form.email}
+            onChange={(e) => setForm({ ...form, email: e.target.value })}
+          />
+        </Field>
+        <Field label="Tipo">
+          <Select value={form.lead_type} onValueChange={(v) => setForm({ ...form, lead_type: v })}>
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="none">Sem paciente vinculado</SelectItem>
-              {(patients ?? []).map((p) => (
-                <SelectItem key={p.id} value={p.id}>
-                  {p.full_name}
-                </SelectItem>
-              ))}
+              <SelectItem value="lead_novo">Lead novo</SelectItem>
+              <SelectItem value="ex_paciente">Ex-paciente</SelectItem>
+              <SelectItem value="indicacao">Indicação</SelectItem>
             </SelectContent>
           </Select>
-        </Field>
-        <Field label="Plano">
-          <Select
-            value={form.plan_id}
-            onValueChange={(v) => {
-              const plan = (plans ?? []).find((p) => p.id === v);
-              setForm({
-                ...form,
-                plan_id: v,
-                amount: plan ? String(plan.card_total) : form.amount,
-              });
-            }}
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">Sem plano definido</SelectItem>
-              {(plans ?? []).map((p) => (
-                <SelectItem key={p.id} value={p.id}>
-                  {p.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Field>
-        <Field label="Valor estimado">
-          <Input
-            type="number"
-            min="0"
-            step="0.01"
-            value={form.amount}
-            onChange={(e) => setForm({ ...form, amount: e.target.value })}
-          />
         </Field>
         <Field label="Origem">
           <Input
+            placeholder="Instagram, parceiro, Google..."
             value={form.source}
             onChange={(e) => setForm({ ...form, source: e.target.value })}
-            placeholder="Instagram, indicação..."
+          />
+        </Field>
+        <Field label="Indicado por">
+          <Input
+            value={form.referred_by}
+            onChange={(e) => setForm({ ...form, referred_by: e.target.value })}
+          />
+        </Field>
+        <Field label="Objetivo principal">
+          <Input
+            value={form.main_goal}
+            onChange={(e) => setForm({ ...form, main_goal: e.target.value })}
           />
         </Field>
         <Field label="Próxima ação">
@@ -348,7 +557,7 @@ function NewOpportunity({ onDone }: { onDone: () => void }) {
         </Field>
         <DialogFooter className="sm:col-span-2">
           <Button type="submit" disabled={mutation.isPending}>
-            Criar oportunidade
+            <UserRound className="size-4" /> Cadastrar lead
           </Button>
         </DialogFooter>
       </form>
@@ -356,6 +565,25 @@ function NewOpportunity({ onDone }: { onDone: () => void }) {
   );
 }
 
+function Metric({
+  label,
+  value,
+  alert = false,
+}: {
+  label: string;
+  value: string;
+  alert?: boolean;
+}) {
+  return (
+    <div className={`panel p-4 ${alert ? "border-warning/50" : ""}`}>
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        {alert ? <Clock3 className="size-4 text-warning" /> : null}
+        {label}
+      </div>
+      <p className="mt-2 text-metric text-2xl font-semibold">{value}</p>
+    </div>
+  );
+}
 function Field({
   label,
   children,
