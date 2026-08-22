@@ -206,6 +206,12 @@ function CommercialPage() {
   const [sourceFilter, setSourceFilter] = useState("todos");
   const [temperatureFilter, setTemperatureFilter] = useState("todos");
   const [ownerFilter, setOwnerFilter] = useState("todos");
+  const [leadSearch, setLeadSearch] = useState("");
+  const [leadTypeFilter, setLeadTypeFilter] = useState("todos");
+  const [leadSourceFilter, setLeadSourceFilter] = useState("todos");
+  const [leadTemperatureFilter, setLeadTemperatureFilter] = useState("todos");
+  const [leadStageFilter, setLeadStageFilter] = useState("todos");
+  const [leadSort, setLeadSort] = useState("recentes");
   const queryClient = useQueryClient();
   const opportunities = useQuery({
     queryKey: ["opportunities"],
@@ -531,6 +537,61 @@ function CommercialPage() {
     (opportunity) => opportunity.id === selectedOpportunityId,
   );
   const selectedLead = (leads.data ?? []).find((lead) => lead.id === selectedOpportunity?.lead_id);
+  const filteredBaseLeads = useMemo(() => {
+    const normalizedSearch = leadSearch.trim().toLocaleLowerCase("pt-BR");
+    const opportunityByLead = new Map(
+      (opportunities.data ?? [])
+        .filter((opportunity) => opportunity.lead_id)
+        .map((opportunity) => [opportunity.lead_id, opportunity]),
+    );
+    const result = (leads.data ?? []).filter((lead) => {
+      const opportunity = opportunityByLead.get(lead.id);
+      const matchesSearch =
+        !normalizedSearch ||
+        [lead.full_name, lead.phone, lead.email, lead.main_goal]
+          .filter(Boolean)
+          .some((value) => value!.toLocaleLowerCase("pt-BR").includes(normalizedSearch));
+      return (
+        matchesSearch &&
+        (leadTypeFilter === "todos" || lead.lead_type === leadTypeFilter) &&
+        (leadSourceFilter === "todos" ||
+          (lead.source || "Não identificado") === leadSourceFilter) &&
+        (leadTemperatureFilter === "todos" || lead.temperature === leadTemperatureFilter) &&
+        (leadStageFilter === "todos" || opportunity?.stage === leadStageFilter)
+      );
+    });
+
+    return result.sort((a, b) => {
+      if (leadSort === "antigos") return a.created_at.localeCompare(b.created_at);
+      if (leadSort === "nome-az") return a.full_name.localeCompare(b.full_name, "pt-BR");
+      if (leadSort === "nome-za") return b.full_name.localeCompare(a.full_name, "pt-BR");
+      return b.created_at.localeCompare(a.created_at);
+    });
+  }, [
+    leadSearch,
+    leadSort,
+    leadSourceFilter,
+    leadStageFilter,
+    leadTemperatureFilter,
+    leadTypeFilter,
+    leads.data,
+    opportunities.data,
+  ]);
+  const hasLeadFilters =
+    Boolean(leadSearch) ||
+    [leadTypeFilter, leadSourceFilter, leadTemperatureFilter, leadStageFilter].some(
+      (value) => value !== "todos",
+    ) ||
+    leadSort !== "recentes";
+
+  const clearLeadFilters = () => {
+    setLeadSearch("");
+    setLeadTypeFilter("todos");
+    setLeadSourceFilter("todos");
+    setLeadTemperatureFilter("todos");
+    setLeadStageFilter("todos");
+    setLeadSort("recentes");
+  };
 
   return (
     <PageBody>
@@ -932,7 +993,7 @@ function CommercialPage() {
                         }`}
                       >
                         <div>
-                          <p className="font-semibold capitalize">{formatAgendaDay(day.date)}</p>
+                          <p className="font-semibold">{formatAgendaDay(day.date)}</p>
                           <p className="text-xs text-muted-foreground">
                             {overdue
                               ? "Pendências vencidas"
@@ -953,7 +1014,9 @@ function CommercialPage() {
                           >
                             <div className="min-w-0">
                               <div className="flex flex-wrap items-center gap-2">
-                                <p className="text-sm font-medium">{entry.title}</p>
+                                <p className="text-sm font-medium">
+                                  {fixPortugueseText(entry.title)}
+                                </p>
                                 <span
                                   className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
                                     entry.kind === "defined"
@@ -1009,61 +1072,170 @@ function CommercialPage() {
               description="Leads permanecem separados dos pacientes até o pagamento ser confirmado."
             />
           ) : (
-            <div className="panel overflow-hidden">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
-                  <tr>
-                    <th className="px-4 py-3">Lead</th>
-                    <th className="px-4 py-3">Tipo</th>
-                    <th className="hidden px-4 py-3 md:table-cell">Origem</th>
-                    <th className="hidden px-4 py-3 lg:table-cell">Objetivo</th>
-                    <th className="px-4 py-3">Entrada</th>
-                    <th className="px-4 py-3 text-right">Ações</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(leads.data ?? []).map((lead) => (
-                    <tr key={lead.id} className="border-t border-border">
-                      <td className="px-4 py-3">
-                        <p className="font-medium">{lead.full_name}</p>
-                        <p className="text-xs text-muted-foreground">{lead.phone}</p>
-                      </td>
-                      <td className="px-4 py-3">
-                        {lead.lead_type === "ex_paciente"
-                          ? "Ex-paciente"
-                          : lead.lead_type === "indicacao"
-                            ? "Indicação"
-                            : "Lead novo"}
-                      </td>
-                      <td className="hidden px-4 py-3 md:table-cell">{lead.source || "—"}</td>
-                      <td className="hidden max-w-sm truncate px-4 py-3 lg:table-cell">
-                        {lead.main_goal || "—"}
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {formatDate(lead.created_at)}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <div className="flex justify-end gap-2">
-                          <Button size="sm" variant="outline" onClick={() => setEditingLead(lead)}>
-                            <Pencil className="size-4" /> Editar
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="destructive"
-                            disabled={deleteLead.isPending}
-                            onClick={() => deleteLead.mutate(lead)}
-                          >
-                            <Trash2 className="size-4" />
-                            {deleteLead.isPending && deleteLead.variables?.id === lead.id
-                              ? "Excluindo..."
-                              : "Excluir"}
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="space-y-4">
+              <section className="panel p-4">
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+                  <Field label="Pesquisar" className="md:col-span-2 xl:col-span-2">
+                    <Input
+                      value={leadSearch}
+                      onChange={(event) => setLeadSearch(event.target.value)}
+                      placeholder="Nome, telefone, e-mail ou objetivo"
+                    />
+                  </Field>
+                  <Field label="Tipo">
+                    <Select value={leadTypeFilter} onValueChange={setLeadTypeFilter}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="todos">Todos</SelectItem>
+                        <SelectItem value="ex_paciente">Ex-paciente</SelectItem>
+                        <SelectItem value="indicacao">Indicação</SelectItem>
+                        <SelectItem value="lead_novo">Lead novo</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="Origem">
+                    <Select value={leadSourceFilter} onValueChange={setLeadSourceFilter}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="todos">Todas</SelectItem>
+                        {sourceOptions.map((source) => (
+                          <SelectItem key={source} value={source}>
+                            {source}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="Temperatura">
+                    <Select value={leadTemperatureFilter} onValueChange={setLeadTemperatureFilter}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="todos">Todas</SelectItem>
+                        <SelectItem value="frio">❄️ Frio</SelectItem>
+                        <SelectItem value="morno">🌤️ Morno</SelectItem>
+                        <SelectItem value="quente">🔥 Quente</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="Etapa">
+                    <Select value={leadStageFilter} onValueChange={setLeadStageFilter}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="todos">Todas</SelectItem>
+                        {stages.map((stage) => (
+                          <SelectItem key={stage.value} value={stage.value}>
+                            {stage.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="Ordenar por">
+                    <Select value={leadSort} onValueChange={setLeadSort}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="recentes">Mais recentes</SelectItem>
+                        <SelectItem value="antigos">Mais antigos</SelectItem>
+                        <SelectItem value="nome-az">Nome: A–Z</SelectItem>
+                        <SelectItem value="nome-za">Nome: Z–A</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                </div>
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
+                  <p className="text-sm text-muted-foreground">
+                    {filteredBaseLeads.length} de {(leads.data ?? []).length} leads encontrados
+                  </p>
+                  {hasLeadFilters ? (
+                    <Button size="sm" variant="outline" onClick={clearLeadFilters}>
+                      Limpar filtros
+                    </Button>
+                  ) : null}
+                </div>
+              </section>
+
+              {filteredBaseLeads.length === 0 ? (
+                <section className="panel p-8 text-center">
+                  <p className="font-medium">Nenhum lead corresponde aos filtros.</p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Altere a pesquisa ou limpe os filtros.
+                  </p>
+                  <Button className="mt-4" variant="outline" onClick={clearLeadFilters}>
+                    Limpar filtros
+                  </Button>
+                </section>
+              ) : (
+                <div className="panel overflow-x-auto">
+                  <table className="w-full min-w-[780px] text-sm">
+                    <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
+                      <tr>
+                        <th className="px-4 py-3">Lead</th>
+                        <th className="px-4 py-3">Tipo</th>
+                        <th className="hidden px-4 py-3 md:table-cell">Origem</th>
+                        <th className="hidden px-4 py-3 lg:table-cell">Objetivo</th>
+                        <th className="px-4 py-3">Entrada</th>
+                        <th className="px-4 py-3 text-right">Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredBaseLeads.map((lead) => (
+                        <tr key={lead.id} className="border-t border-border">
+                          <td className="px-4 py-3">
+                            <p className="font-medium">{lead.full_name}</p>
+                            <p className="text-xs text-muted-foreground">{lead.phone}</p>
+                          </td>
+                          <td className="px-4 py-3">
+                            {lead.lead_type === "ex_paciente"
+                              ? "Ex-paciente"
+                              : lead.lead_type === "indicacao"
+                                ? "Indicação"
+                                : "Lead novo"}
+                          </td>
+                          <td className="hidden px-4 py-3 md:table-cell">{lead.source || "—"}</td>
+                          <td className="hidden max-w-sm truncate px-4 py-3 lg:table-cell">
+                            {lead.main_goal || "—"}
+                          </td>
+                          <td className="px-4 py-3 text-muted-foreground">
+                            {formatDate(lead.created_at)}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setEditingLead(lead)}
+                              >
+                                <Pencil className="size-4" /> Editar
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                disabled={deleteLead.isPending}
+                                onClick={() => deleteLead.mutate(lead)}
+                              >
+                                <Trash2 className="size-4" />
+                                {deleteLead.isPending && deleteLead.variables?.id === lead.id
+                                  ? "Excluindo..."
+                                  : "Excluir"}
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
         </TabsContent>
@@ -2076,15 +2248,41 @@ function formatAgendaDay(value: string) {
   const tomorrow = new Date(`${todayISO()}T12:00:00`);
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowISO = tomorrow.toISOString().slice(0, 10);
-  const formatted = date.toLocaleDateString("pt-BR", {
+  const rawFormatted = date.toLocaleDateString("pt-BR", {
     weekday: "long",
     day: "2-digit",
     month: "long",
     ...(date.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}),
   });
+  const formatted = `${rawFormatted.charAt(0).toLocaleUpperCase("pt-BR")}${rawFormatted.slice(1)}`;
   if (value === todayISO()) return `Hoje, ${formatted}`;
   if (value === tomorrowISO) return `Amanhã, ${formatted}`;
   return formatted;
+}
+
+function fixPortugueseText(value: string) {
+  const replacements: Array<[string, string]> = [
+    ["Ã§", "ç"],
+    ["Ã£", "ã"],
+    ["Ãµ", "õ"],
+    ["Ã¡", "á"],
+    ["Ã©", "é"],
+    ["Ã­", "í"],
+    ["Ã³", "ó"],
+    ["Ãº", "ú"],
+    ["Ã¢", "â"],
+    ["Ãª", "ê"],
+    ["Ã´", "ô"],
+    ["Ã€", "À"],
+    ["Ã�", "Á"],
+    ["Ã‰", "É"],
+    ["Ã“", "Ó"],
+    ["Ãš", "Ú"],
+  ];
+  return replacements.reduce(
+    (corrected, [incorrect, correct]) => corrected.replaceAll(incorrect, correct),
+    value,
+  );
 }
 
 function DetailItem({
