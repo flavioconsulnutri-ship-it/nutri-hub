@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Clock3, Phone, Plus, UserRound } from "lucide-react";
+import { CheckCircle2, Clock3, Pencil, Phone, Plus, UserRound } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -31,6 +31,7 @@ import type { Database } from "@/integrations/supabase/types";
 import { formatBRL, formatDate, todayISO } from "@/lib/format";
 
 type FunnelStage = Database["public"]["Enums"]["funnel_stage"];
+type LeadRow = Database["public"]["Tables"]["leads"]["Row"];
 const stages: Array<{ value: FunnelStage; label: string; helper: string; tone: string }> = [
   {
     value: "novo_lead",
@@ -104,6 +105,7 @@ export const Route = createFileRoute("/_authenticated/comercial")({
 
 function CommercialPage() {
   const [open, setOpen] = useState(false);
+  const [editingLead, setEditingLead] = useState<LeadRow | null>(null);
   const queryClient = useQueryClient();
   const opportunities = useQuery({
     queryKey: ["opportunities"],
@@ -372,6 +374,7 @@ function CommercialPage() {
                     <th className="hidden px-4 py-3 md:table-cell">Origem</th>
                     <th className="hidden px-4 py-3 lg:table-cell">Objetivo</th>
                     <th className="px-4 py-3">Entrada</th>
+                    <th className="px-4 py-3 text-right">Ações</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -395,6 +398,11 @@ function CommercialPage() {
                       <td className="px-4 py-3 text-muted-foreground">
                         {formatDate(lead.created_at)}
                       </td>
+                      <td className="px-4 py-3 text-right">
+                        <Button size="sm" variant="outline" onClick={() => setEditingLead(lead)}>
+                          <Pencil className="size-4" /> Editar
+                        </Button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -403,7 +411,141 @@ function CommercialPage() {
           )}
         </TabsContent>
       </Tabs>
+      <Dialog open={editingLead !== null} onOpenChange={(value) => !value && setEditingLead(null)}>
+        {editingLead ? (
+          <EditLeadDialog lead={editingLead} onDone={() => setEditingLead(null)} />
+        ) : null}
+      </Dialog>
     </PageBody>
+  );
+}
+
+function EditLeadDialog({ lead, onDone }: { lead: LeadRow; onDone: () => void }) {
+  const queryClient = useQueryClient();
+  const [formError, setFormError] = useState("");
+  const [form, setForm] = useState({
+    full_name: lead.full_name,
+    phone: lead.phone,
+    email: lead.email ?? "",
+    lead_type: lead.lead_type,
+    source: lead.source ?? "",
+    referred_by: lead.referred_by ?? "",
+    main_goal: lead.main_goal ?? "",
+    notes: lead.notes ?? "",
+  });
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase
+        .from("leads")
+        .update({
+          full_name: form.full_name.trim(),
+          phone: form.phone.trim(),
+          email: form.email.trim() || null,
+          lead_type: form.lead_type,
+          source: form.source.trim() || null,
+          referred_by: form.referred_by.trim() || null,
+          main_goal: form.main_goal.trim() || null,
+          notes: form.notes.trim() || null,
+        })
+        .eq("id", lead.id);
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: async () => {
+      toast.success("Lead atualizado com sucesso.");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["leads"] }),
+        queryClient.invalidateQueries({ queryKey: ["opportunities"] }),
+      ]);
+      onDone();
+    },
+    onError: (error: Error) => setFormError(error.message),
+  });
+  const save = () => {
+    setFormError("");
+    if (!form.full_name.trim() || !form.phone.trim()) {
+      setFormError("Preencha o nome e o telefone.");
+      return;
+    }
+    mutation.mutate();
+  };
+
+  return (
+    <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+      <DialogHeader>
+        <DialogTitle>Editar lead</DialogTitle>
+      </DialogHeader>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="Nome" className="sm:col-span-2">
+          <Input
+            value={form.full_name}
+            onChange={(e) => setForm({ ...form, full_name: e.target.value })}
+          />
+        </Field>
+        <Field label="Telefone">
+          <Input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+        </Field>
+        <Field label="E-mail">
+          <Input
+            type="email"
+            value={form.email}
+            onChange={(e) => setForm({ ...form, email: e.target.value })}
+          />
+        </Field>
+        <Field label="Tipo">
+          <Select
+            value={form.lead_type}
+            onValueChange={(value) => setForm({ ...form, lead_type: value })}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="lead_novo">Lead novo</SelectItem>
+              <SelectItem value="ex_paciente">Ex-paciente</SelectItem>
+              <SelectItem value="indicacao">Indicação</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field label="Origem">
+          <Input
+            value={form.source}
+            onChange={(e) => setForm({ ...form, source: e.target.value })}
+          />
+        </Field>
+        <Field label="Indicado por">
+          <Input
+            value={form.referred_by}
+            onChange={(e) => setForm({ ...form, referred_by: e.target.value })}
+          />
+        </Field>
+        <Field label="Objetivo principal">
+          <Input
+            value={form.main_goal}
+            onChange={(e) => setForm({ ...form, main_goal: e.target.value })}
+          />
+        </Field>
+        <Field label="Observações" className="sm:col-span-2">
+          <Textarea
+            rows={4}
+            value={form.notes}
+            onChange={(e) => setForm({ ...form, notes: e.target.value })}
+          />
+        </Field>
+        {formError ? (
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive sm:col-span-2">
+            Não foi possível salvar: {formError}
+          </div>
+        ) : null}
+        <DialogFooter className="sm:col-span-2">
+          <Button type="button" variant="outline" onClick={onDone}>
+            Cancelar
+          </Button>
+          <Button type="button" disabled={mutation.isPending} onClick={save}>
+            {mutation.isPending ? "Salvando..." : "Salvar alterações"}
+          </Button>
+        </DialogFooter>
+      </div>
+    </DialogContent>
   );
 }
 
