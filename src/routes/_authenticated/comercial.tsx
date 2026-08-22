@@ -409,6 +409,7 @@ function CommercialPage() {
 
 function NewLeadDialog({ onDone }: { onDone: () => void }) {
   const queryClient = useQueryClient();
+  const [formError, setFormError] = useState("");
   const [form, setForm] = useState({
     full_name: "",
     phone: "",
@@ -424,6 +425,8 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
   const mutation = useMutation({
     mutationFn: async () => {
       const { data: userData } = await supabase.auth.getUser();
+      if (!userData.user)
+        throw new Error("Sua sessão expirou. Entre novamente para cadastrar o lead.");
       const { data: profile } = await supabase
         .from("profiles")
         .select("org_id")
@@ -470,8 +473,28 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
       ]);
       onDone();
     },
-    onError: (e: Error) => toast.error(e.message),
+    onError: (e: Error) => {
+      setFormError(e.message);
+      toast.error(e.message);
+    },
   });
+  const submitLead = () => {
+    setFormError("");
+    mutation.reset();
+    if (!form.full_name.trim() || !form.phone.trim()) {
+      setFormError("Preencha o nome e o telefone.");
+      return;
+    }
+    if (!form.next_action.trim()) {
+      setFormError("Informe qual será a próxima ação.");
+      return;
+    }
+    if (!form.next_action_date) {
+      setFormError("Selecione a data da próxima ação.");
+      return;
+    }
+    mutation.mutate();
+  };
   return (
     <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
       <DialogHeader>
@@ -481,12 +504,9 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
         className="grid gap-4 sm:grid-cols-2"
         onSubmit={(e) => {
           e.preventDefault();
-          if (!form.full_name.trim() || !form.phone.trim())
-            return toast.error("Nome e telefone são obrigatórios.");
-          if (!form.next_action_date)
-            return toast.error("Todo lead ativo precisa de próxima ação e data.");
-          mutation.mutate();
+          submitLead();
         }}
+        noValidate
       >
         <Field label="Nome" className="sm:col-span-2">
           <Input
@@ -555,14 +575,15 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
             onChange={(e) => setForm({ ...form, notes: e.target.value })}
           />
         </Field>
-        {mutation.error ? (
+        {formError ? (
           <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive sm:col-span-2">
-            Não foi possível cadastrar: {mutation.error.message}
+            Não foi possível cadastrar: {formError}
           </div>
         ) : null}
         <DialogFooter className="sm:col-span-2">
-          <Button type="submit" disabled={mutation.isPending}>
-            <UserRound className="size-4" /> Cadastrar lead
+          <Button type="button" disabled={mutation.isPending} onClick={submitLead}>
+            <UserRound className="size-4" />
+            {mutation.isPending ? "Cadastrando..." : "Cadastrar lead"}
           </Button>
         </DialogFooter>
       </form>
