@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Clock3, Pencil, Phone, Plus, Trash2, UserRound } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { CheckCircle2, Clock3, GripVertical, Pencil, Plus, Trash2, UserRound } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -183,6 +183,9 @@ export const Route = createFileRoute("/_authenticated/comercial")({
 function CommercialPage() {
   const [open, setOpen] = useState(false);
   const [editingLead, setEditingLead] = useState<LeadRow | null>(null);
+  const [selectedOpportunityId, setSelectedOpportunityId] = useState<string | null>(null);
+  const [dragOverStage, setDragOverStage] = useState<FunnelStage | null>(null);
+  const didDrag = useRef(false);
   const [dashboardFrom, setDashboardFrom] = useState(() => {
     const date = new Date();
     date.setMonth(date.getMonth() - 5, 1);
@@ -441,6 +444,22 @@ function CommercialPage() {
       ).sort(),
     [leads.data],
   );
+  const nextActions = useMemo(
+    () =>
+      (opportunities.data ?? [])
+        .filter(
+          (opportunity) =>
+            opportunity.next_action &&
+            opportunity.next_action_date &&
+            !["ganha", "perdida"].includes(opportunity.stage),
+        )
+        .sort((a, b) => (a.next_action_date ?? "").localeCompare(b.next_action_date ?? "")),
+    [opportunities.data],
+  );
+  const selectedOpportunity = (opportunities.data ?? []).find(
+    (opportunity) => opportunity.id === selectedOpportunityId,
+  );
+  const selectedLead = (leads.data ?? []).find((lead) => lead.id === selectedOpportunity?.lead_id);
 
   return (
     <PageBody>
@@ -668,7 +687,33 @@ function CommercialPage() {
               {stages.map((stage) => {
                 const items = (opportunities.data ?? []).filter((i) => i.stage === stage.value);
                 return (
-                  <section key={stage.value} className={`rounded-xl border p-3 ${stage.tone}`}>
+                  <section
+                    key={stage.value}
+                    className={`rounded-xl border p-3 transition-all ${stage.tone} ${
+                      dragOverStage === stage.value ? "ring-2 ring-primary ring-offset-2" : ""
+                    }`}
+                    onDragEnter={(event) => {
+                      event.preventDefault();
+                      setDragOverStage(stage.value);
+                    }}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDragLeave={(event) => {
+                      if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+                        setDragOverStage(null);
+                      }
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      setDragOverStage(null);
+                      const id = event.dataTransfer.getData("application/x-opportunity-id");
+                      const from = event.dataTransfer.getData(
+                        "application/x-opportunity-stage",
+                      ) as FunnelStage;
+                      if (id && from && from !== stage.value) {
+                        move.mutate({ id, from, to: stage.value });
+                      }
+                    }}
+                  >
                     <div className="mb-3">
                       <div className="flex items-center justify-between gap-2">
                         <h2 className="text-sm font-semibold">{stage.label}</h2>
@@ -689,12 +734,42 @@ function CommercialPage() {
                         return (
                           <article
                             key={item.id}
-                            className="rounded-lg border border-border bg-card p-3 shadow-sm"
+                            draggable={!move.isPending}
+                            role="button"
+                            tabIndex={0}
+                            aria-label={`Abrir informações de ${lead?.full_name ?? item.title}`}
+                            className="cursor-grab rounded-lg border border-border bg-card p-3 shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md active:cursor-grabbing"
+                            onDragStart={(event) => {
+                              didDrag.current = true;
+                              event.dataTransfer.effectAllowed = "move";
+                              event.dataTransfer.setData("application/x-opportunity-id", item.id);
+                              event.dataTransfer.setData(
+                                "application/x-opportunity-stage",
+                                item.stage,
+                              );
+                            }}
+                            onDragEnd={() => {
+                              setDragOverStage(null);
+                              window.setTimeout(() => {
+                                didDrag.current = false;
+                              }, 0);
+                            }}
+                            onClick={() => {
+                              if (!didDrag.current) setSelectedOpportunityId(item.id);
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                setSelectedOpportunityId(item.id);
+                              }
+                            }}
                           >
-                            <p className="text-sm font-semibold">{lead?.full_name ?? item.title}</p>
-                            <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
-                              <Phone className="size-3" /> {lead?.phone ?? "Sem telefone"}
-                            </p>
+                            <div className="flex items-start justify-between gap-2">
+                              <p className="text-sm font-semibold">
+                                {lead?.full_name ?? item.title}
+                              </p>
+                              <GripVertical className="size-4 shrink-0 text-muted-foreground" />
+                            </div>
                             <div className="mt-2 flex flex-wrap gap-1">
                               {(lead?.main_goal ?? "")
                                 .split(",")
@@ -714,41 +789,6 @@ function CommercialPage() {
                                 </span>
                               ) : null}
                             </div>
-                            <div className="mt-3 flex items-center justify-between text-xs">
-                              <span className="font-medium">{formatBRL(item.amount)}</span>
-                              <span
-                                className={
-                                  item.next_action_date
-                                    ? "text-muted-foreground"
-                                    : "font-medium text-destructive"
-                                }
-                              >
-                                {item.next_action_date
-                                  ? formatDate(item.next_action_date)
-                                  : "Sem ação"}
-                              </span>
-                            </div>
-                            <Select
-                              value={item.stage}
-                              onValueChange={(to) =>
-                                move.mutate({
-                                  id: item.id,
-                                  from: item.stage,
-                                  to: to as FunnelStage,
-                                })
-                              }
-                            >
-                              <SelectTrigger className="mt-3 h-8 text-xs">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {stages.map((o) => (
-                                  <SelectItem key={o.value} value={o.value}>
-                                    {o.label}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
                           </article>
                         );
                       })}
@@ -760,41 +800,117 @@ function CommercialPage() {
           )}
         </TabsContent>
         <TabsContent value="tarefas" className="mt-4">
-          {(tasks.data ?? []).length === 0 ? (
-            <EmptyState
-              title="Nenhuma tarefa pendente"
-              description="As réguas automáticas aparecerão aqui ao cadastrar ou mover negociações."
-            />
-          ) : (
-            <div className="panel divide-y divide-border">
-              {(tasks.data ?? []).map((task) => {
-                const opp = task.opportunities as {
-                  title: string;
-                  leads: { full_name: string } | null;
-                } | null;
-                return (
-                  <div
-                    key={task.id}
-                    className="flex flex-wrap items-center justify-between gap-3 p-4"
-                  >
-                    <div>
-                      <p className="text-sm font-medium">{task.title}</p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {opp?.leads?.full_name ?? opp?.title} · {formatDate(task.due_date)}
-                      </p>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => completeTask.mutate(task.id)}
-                    >
-                      <CheckCircle2 className="size-4" /> Concluir
-                    </Button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          <div className="space-y-5">
+            <section className="panel overflow-hidden">
+              <div className="border-b border-border p-4">
+                <h2 className="font-semibold">Ações combinadas com os leads</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Esta é a próxima ação e a data informadas no cadastro ou na edição de cada lead.
+                  Ao editar o lead, este quadro é atualizado automaticamente.
+                </p>
+              </div>
+              {nextActions.length === 0 ? (
+                <div className="p-4 text-sm text-muted-foreground">
+                  Nenhum lead ativo possui uma próxima ação com data.
+                </div>
+              ) : (
+                <div className="divide-y divide-border">
+                  {nextActions.map((opportunity) => {
+                    const lead = (leads.data ?? []).find((item) => item.id === opportunity.lead_id);
+                    const dueDate = opportunity.next_action_date ?? "";
+                    const timing =
+                      dueDate < todayISO()
+                        ? { label: "Vencida", className: "bg-red-100 text-red-700" }
+                        : dueDate === todayISO()
+                          ? { label: "Hoje", className: "bg-amber-100 text-amber-800" }
+                          : { label: "Agendada", className: "bg-blue-100 text-blue-700" };
+                    return (
+                      <div
+                        key={opportunity.id}
+                        className="flex flex-wrap items-center justify-between gap-3 p-4"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-sm font-medium">{opportunity.next_action}</p>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${timing.className}`}
+                            >
+                              {timing.label}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {lead?.full_name ?? opportunity.title} · {formatDate(dueDate)}
+                            {opportunity.next_action_details
+                              ? ` · ${opportunity.next_action_details}`
+                              : ""}
+                          </p>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setSelectedOpportunityId(opportunity.id)}
+                          >
+                            Ver lead
+                          </Button>
+                          {lead ? (
+                            <Button size="sm" onClick={() => setEditingLead(lead)}>
+                              <Pencil className="size-4" /> Atualizar ação
+                            </Button>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+
+            <section className="panel overflow-hidden">
+              <div className="border-b border-border p-4">
+                <h2 className="font-semibold">Lembretes automáticos do playbook</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  São tentativas sugeridas pela régua comercial. Elas são recalculadas quando o lead
+                  muda de etapa no Kanban.
+                </p>
+              </div>
+              {(tasks.data ?? []).length === 0 ? (
+                <div className="p-4 text-sm text-muted-foreground">
+                  Nenhum lembrete automático pendente.
+                </div>
+              ) : (
+                <div className="divide-y divide-border">
+                  {(tasks.data ?? []).map((task) => {
+                    const opp = task.opportunities as {
+                      title: string;
+                      leads: { full_name: string } | null;
+                    } | null;
+                    return (
+                      <div
+                        key={task.id}
+                        className="flex flex-wrap items-center justify-between gap-3 p-4"
+                      >
+                        <div>
+                          <p className="text-sm font-medium">{task.title}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {opp?.leads?.full_name ?? opp?.title} · {formatDate(task.due_date)}
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={completeTask.isPending}
+                          onClick={() => completeTask.mutate(task.id)}
+                        >
+                          <CheckCircle2 className="size-4" /> Concluir lembrete
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </div>
         </TabsContent>
         <TabsContent value="leads" className="mt-4">
           {(leads.data ?? []).length === 0 ? (
@@ -862,6 +978,84 @@ function CommercialPage() {
           )}
         </TabsContent>
       </Tabs>
+      <Dialog
+        open={selectedOpportunityId !== null}
+        onOpenChange={(value) => !value && setSelectedOpportunityId(null)}
+      >
+        {selectedOpportunity ? (
+          <DialogContent className="sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>{selectedLead?.full_name ?? selectedOpportunity.title}</DialogTitle>
+            </DialogHeader>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <DetailItem label="Telefone" value={selectedLead?.phone || "Não informado"} />
+              <DetailItem label="E-mail" value={selectedLead?.email || "Não informado"} />
+              <DetailItem
+                label="Etapa do funil"
+                value={
+                  stages.find((stage) => stage.value === selectedOpportunity.stage)?.label ??
+                  selectedOpportunity.stage
+                }
+              />
+              <DetailItem label="Origem" value={selectedLead?.source || "Não informada"} />
+              <DetailItem
+                label="Temperatura"
+                value={
+                  selectedLead?.temperature === "quente"
+                    ? "🔥 Quente"
+                    : selectedLead?.temperature === "frio"
+                      ? "❄️ Frio"
+                      : "🌤️ Morno"
+                }
+              />
+              <DetailItem label="Tipo" value={selectedLead?.lead_type || "Não informado"} />
+              <DetailItem
+                label="Objetivo"
+                value={selectedLead?.main_goal || "Não informado"}
+                className="sm:col-span-2"
+              />
+              <DetailItem
+                label="Próxima ação"
+                value={selectedOpportunity.next_action || "Não informada"}
+              />
+              <DetailItem
+                label="Data da próxima ação"
+                value={
+                  selectedOpportunity.next_action_date
+                    ? formatDate(selectedOpportunity.next_action_date)
+                    : "Não informada"
+                }
+              />
+              {selectedOpportunity.next_action_details ? (
+                <DetailItem
+                  label="Detalhes da próxima ação"
+                  value={selectedOpportunity.next_action_details}
+                  className="sm:col-span-2"
+                />
+              ) : null}
+              {selectedLead?.notes ? (
+                <DetailItem
+                  label="Observações"
+                  value={selectedLead.notes}
+                  className="sm:col-span-2"
+                />
+              ) : null}
+            </div>
+            <DialogFooter>
+              {selectedLead ? (
+                <Button
+                  onClick={() => {
+                    setSelectedOpportunityId(null);
+                    setEditingLead(selectedLead);
+                  }}
+                >
+                  <Pencil className="size-4" /> Editar lead
+                </Button>
+              ) : null}
+            </DialogFooter>
+          </DialogContent>
+        ) : null}
+      </Dialog>
       <Dialog open={editingLead !== null} onOpenChange={(value) => !value && setEditingLead(null)}>
         {editingLead ? (
           <EditLeadDialog lead={editingLead} onDone={() => setEditingLead(null)} />
@@ -1760,6 +1954,23 @@ function Metric({
         {label}
       </div>
       <p className="mt-2 text-metric text-2xl font-semibold">{value}</p>
+    </div>
+  );
+}
+
+function DetailItem({
+  label,
+  value,
+  className,
+}: {
+  label: string;
+  value: string;
+  className?: string;
+}) {
+  return (
+    <div className={`rounded-lg border border-border bg-muted/30 p-3 ${className ?? ""}`}>
+      <p className="text-xs font-medium text-muted-foreground">{label}</p>
+      <p className="mt-1 whitespace-pre-wrap text-sm">{value}</p>
     </div>
   );
 }
