@@ -1387,6 +1387,9 @@ export type Database = {
         Row: {
           anticipation_fee_percent: number
           cancelled: boolean
+          cancelled_at: string | null
+          cancelled_by: string | null
+          cancellation_reason: string | null
           card_fee_percent: number
           created_at: string
           created_by: string | null
@@ -1413,6 +1416,9 @@ export type Database = {
         Insert: {
           anticipation_fee_percent?: number
           cancelled?: boolean
+          cancelled_at?: string | null
+          cancelled_by?: string | null
+          cancellation_reason?: string | null
           card_fee_percent?: number
           created_at?: string
           created_by?: string | null
@@ -1439,6 +1445,9 @@ export type Database = {
         Update: {
           anticipation_fee_percent?: number
           cancelled?: boolean
+          cancelled_at?: string | null
+          cancelled_by?: string | null
+          cancellation_reason?: string | null
           card_fee_percent?: number
           created_at?: string
           created_by?: string | null
@@ -1519,6 +1528,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      cancel_sale_safely: {
+        Args: { _reason: string; _sale_id: string }
+        Returns: Json
+      }
       can_view_clinical: { Args: never; Returns: boolean }
       can_view_commercial: { Args: never; Returns: boolean }
       can_view_financial: { Args: never; Returns: boolean }

@@ -5,6 +5,16 @@ import { toast } from "sonner";
 
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -20,6 +30,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { supabase } from "@/integrations/supabase/client";
 import { useSession } from "@/hooks/useSession";
 import { formatBRL, formatDate, formatDateTime, formatNumber, todayISO } from "@/lib/format";
+import { cancelSale } from "@/lib/sales.functions";
 import {
   appointmentStatusLabel,
   patientStatusLabel,
@@ -41,7 +52,10 @@ export const Route = createFileRoute("/_authenticated/pacientes/$id")({
           "Ficha individual com dados pessoais, registros clínicos, antropometria, contratos, parcelas e consultas.",
       },
       { property: "og:title", content: "Ficha do paciente — Consultório de Nutrição" },
-      { property: "og:description", content: "Histórico clínico, comercial e financeiro do paciente." },
+      {
+        property: "og:description",
+        content: "Histórico clínico, comercial e financeiro do paciente.",
+      },
       { name: "robots", content: "noindex" },
     ],
   }),
@@ -55,7 +69,7 @@ function PatientDetail() {
   const { data, isLoading } = useQuery({
     queryKey: ["patient", id],
     queryFn: async () => {
-      const [patient, records, anthro, receivables, contracts, appointments, history] =
+      const [patient, records, anthro, receivables, contracts, sales, appointments, history] =
         await Promise.all([
           supabase.from("patients").select("*").eq("id", id).maybeSingle(),
           supabase
@@ -68,16 +82,17 @@ function PatientDetail() {
             .select("*")
             .eq("patient_id", id)
             .order("measured_at", { ascending: false }),
-          supabase
-            .from("receivables")
-            .select("*")
-            .eq("patient_id", id)
-            .order("due_date"),
+          supabase.from("receivables").select("*").eq("patient_id", id).order("due_date"),
           supabase
             .from("contracts")
             .select("*, plans(name)")
             .eq("patient_id", id)
             .order("start_date", { ascending: false }),
+          supabase
+            .from("sales")
+            .select("*, plans(name)")
+            .eq("patient_id", id)
+            .order("sale_date", { ascending: false }),
           supabase
             .from("appointments")
             .select("*")
@@ -96,6 +111,7 @@ function PatientDetail() {
         anthro: anthro.data ?? [],
         receivables: receivables.data ?? [],
         contracts: contracts.data ?? [],
+        sales: sales.data ?? [],
         appointments: appointments.data ?? [],
         history: history.data ?? [],
       };
@@ -250,13 +266,50 @@ function PatientDetail() {
         {canViewFinancial ? (
           <TabsContent value="financeiro" className="space-y-6 pt-6">
             <div>
+              <h3 className="section-title">Vendas</h3>
+              {data.sales.length === 0 ? (
+                <p className="mt-2 text-sm text-muted-foreground">Nenhuma venda registrada.</p>
+              ) : (
+                <div className="mt-3 space-y-2">
+                  {data.sales.map((sale) => (
+                    <div
+                      key={sale.id}
+                      className="panel flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm"
+                    >
+                      <div>
+                        <p className="font-medium">
+                          {(sale.plans as { name: string } | null)?.name ?? "Plano avulso"}
+                        </p>
+                        <p className="mt-1 text-muted-foreground">
+                          Venda em {formatDate(sale.sale_date)} · receita líquida{" "}
+                          {formatBRL(Number(sale.net_amount))} · caixa previsto{" "}
+                          {formatBRL(Number(sale.expected_cash_amount))}
+                        </p>
+                        {sale.cancelled ? (
+                          <p className="mt-1 text-xs text-destructive">
+                            Cancelada
+                            {sale.cancellation_reason ? ` · ${sale.cancellation_reason}` : ""}
+                          </p>
+                        ) : null}
+                      </div>
+                      {!sale.cancelled ? <CancelSaleButton sale={sale} patientId={p.id} /> : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
               <h3 className="section-title">Contratos</h3>
               {data.contracts.length === 0 ? (
                 <p className="mt-2 text-sm text-muted-foreground">Nenhum contrato ativo.</p>
               ) : (
                 <div className="mt-3 space-y-2">
                   {data.contracts.map((c) => (
-                    <div key={c.id} className="panel flex flex-wrap justify-between gap-2 px-4 py-3 text-sm">
+                    <div
+                      key={c.id}
+                      className="panel flex flex-wrap justify-between gap-2 px-4 py-3 text-sm"
+                    >
                       <span className="font-medium">
                         {(c.plans as { name: string } | null)?.name ?? "Plano avulso"}
                       </span>
@@ -312,7 +365,11 @@ function PatientDetail() {
 
         <TabsContent value="linha" className="pt-6">
           <ol className="space-y-3">
-            <TimelineItem date={p.entry_date} title="Entrada no consultório" detail={p.source ?? ""} />
+            <TimelineItem
+              date={p.entry_date}
+              title="Entrada no consultório"
+              detail={p.source ?? ""}
+            />
             {data.history.map((h) => (
               <TimelineItem
                 key={h.id}
@@ -353,15 +410,106 @@ function Info({ label, value }: { label: string; value?: string | null }) {
   );
 }
 
-function TimelineItem({
-  date,
-  title,
-  detail,
-}: {
-  date: string;
-  title: string;
-  detail?: string;
-}) {
+type CancellableSale = {
+  id: string;
+  sale_date: string;
+  net_amount: number;
+  expected_cash_amount: number;
+  processing_fee_amount: number;
+  plans: { name: string } | null;
+};
+
+function CancelSaleButton({ sale, patientId }: { sale: CancellableSale; patientId: string }) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [acknowledged, setAcknowledged] = useState(false);
+
+  const mutation = useMutation({
+    mutationFn: () => cancelSale({ data: { saleId: sale.id, reason } }),
+    onSuccess: async () => {
+      toast.success("Venda cancelada. A oportunidade voltou para Aguardando pagamento.");
+      setOpen(false);
+      setReason("");
+      setAcknowledged(false);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["patient", patientId] }),
+        queryClient.invalidateQueries({ queryKey: ["patients"] }),
+        queryClient.invalidateQueries({ queryKey: ["opportunities"] }),
+        queryClient.invalidateQueries({ queryKey: ["leads"] }),
+        queryClient.invalidateQueries({ queryKey: ["crm-tasks"] }),
+        queryClient.invalidateQueries({ queryKey: ["sales"] }),
+        queryClient.invalidateQueries({ queryKey: ["contracts"] }),
+        queryClient.invalidateQueries({ queryKey: ["receivables"] }),
+      ]);
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button type="button" variant="destructive" size="sm">
+          Cancelar venda
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Cancelar esta venda?</DialogTitle>
+          <DialogDescription>
+            Esta ação preserva o histórico, cancela contrato, repasse e DRE e reabre a oportunidade
+            para um novo fechamento.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="rounded-lg border bg-muted/40 p-3 text-sm">
+          <p className="font-medium">{sale.plans?.name ?? "Plano avulso"}</p>
+          <p className="mt-1 text-muted-foreground">
+            Receita {formatBRL(Number(sale.net_amount))} · caixa previsto{" "}
+            {formatBRL(Number(sale.expected_cash_amount))} · taxas{" "}
+            {formatBRL(Number(sale.processing_fee_amount))}
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor={`cancel-reason-${sale.id}`}>Motivo obrigatório</Label>
+          <Textarea
+            id={`cancel-reason-${sale.id}`}
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="Ex.: plano selecionado incorretamente"
+          />
+        </div>
+
+        <label className="flex items-start gap-3 rounded-lg border border-destructive/30 p-3">
+          <Checkbox
+            checked={acknowledged}
+            onCheckedChange={(value) => setAcknowledged(value === true)}
+          />
+          <span className="text-sm">
+            Confirmo que contrato, recebimentos pendentes e competências da DRE serão cancelados.
+          </span>
+        </label>
+
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+            Manter venda
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={!acknowledged || reason.trim().length < 5 || mutation.isPending}
+            onClick={() => mutation.mutate()}
+          >
+            {mutation.isPending ? "Cancelando..." : "Confirmar cancelamento"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function TimelineItem({ date, title, detail }: { date: string; title: string; detail?: string }) {
   return (
     <li className="panel px-4 py-3">
       <p className="text-xs text-muted-foreground">

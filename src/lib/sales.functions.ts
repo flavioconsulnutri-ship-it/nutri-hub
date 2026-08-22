@@ -414,34 +414,24 @@ export const registerWonSale = createServerFn({ method: "POST" })
     };
   });
 
-/** Cancela a venda: parcelas em aberto e competências futuras deixam de valer. */
+/**
+ * Cancela a venda de forma atômica, preserva a auditoria e reabre a oportunidade.
+ * Se já houve recebimento, exige estorno antes do cancelamento.
+ */
 export const cancelSale = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((input: { saleId: string; reason?: string }) => {
+  .inputValidator((input: { saleId: string; reason: string }) => {
     if (!input.saleId) throw new Error("Venda não informada.");
+    if (input.reason.trim().length < 5)
+      throw new Error("Informe um motivo com pelo menos 5 caracteres.");
     return input;
   })
   .handler(async ({ data, context }) => {
     const { supabase } = context;
-    const today = new Date().toISOString().slice(0, 10);
-
-    await supabase
-      .from("sales")
-      .update({ cancelled: true, notes: data.reason ?? null })
-      .eq("id", data.saleId);
-    await supabase
-      .from("receivables")
-      .update({ status: "cancelado" as never })
-      .eq("sale_id", data.saleId)
-      .in("status", ["previsto", "pendente", "vencido"]);
-    await supabase
-      .from("revenue_recognition")
-      .update({ cancelled: true })
-      .eq("sale_id", data.saleId)
-      .gte("competence_date", today.slice(0, 7) + "-01");
-    await supabase
-      .from("contracts")
-      .update({ status: "cancelado" as never })
-      .eq("sale_id", data.saleId);
-    return { ok: true };
+    const { data: result, error } = await supabase.rpc("cancel_sale_safely", {
+      _sale_id: data.saleId,
+      _reason: data.reason.trim(),
+    });
+    if (error) throw new Error(error.message);
+    return result;
   });
