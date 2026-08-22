@@ -62,6 +62,10 @@ const formatDateTime = (value: string) =>
     dateStyle: "short",
     timeStyle: "short",
   }).format(new Date(value));
+const formatMonth = (value: string) =>
+  new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric" }).format(
+    new Date(`${value}-01T12:00:00`),
+  );
 const leadSources = alphabetical([
   "Instagram",
   "WhatsApp",
@@ -206,6 +210,10 @@ function CommercialPage() {
   const [dashboardTo, setDashboardTo] = useState(todayISO());
   const [sourceFilter, setSourceFilter] = useState("todos");
   const [ownerFilter, setOwnerFilter] = useState("todos");
+  const [goalMonth, setGoalMonth] = useState(todayISO().slice(0, 7));
+  const [goalOpen, setGoalOpen] = useState(false);
+  const [goalError, setGoalError] = useState("");
+  const [goalForm, setGoalForm] = useState({ revenue: "", sales: "" });
   const [leadSearch, setLeadSearch] = useState("");
   const [leadTypeFilter, setLeadTypeFilter] = useState("todos");
   const [leadSourceFilter, setLeadSourceFilter] = useState("todos");
@@ -258,6 +266,17 @@ function CommercialPage() {
       return data;
     },
   });
+  const commercialSales = useQuery({
+    queryKey: ["commercial-sales"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("sales")
+        .select("id, opportunity_id, sale_date, net_amount, cancelled")
+        .eq("cancelled", false);
+      if (error) throw new Error(error.message);
+      return data;
+    },
+  });
   const tasks = useQuery({
     queryKey: ["crm-tasks"],
     queryFn: async () => {
@@ -294,6 +313,63 @@ function CommercialPage() {
       if (error) throw new Error(error.message);
       return data;
     },
+  });
+  const commercialGoals = useQuery({
+    queryKey: ["commercial-goals"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("commercial_goals")
+        .select("*")
+        .order("month", { ascending: false });
+      if (error) throw new Error(error.message);
+      return data;
+    },
+  });
+  const selectedGoal = (commercialGoals.data ?? []).find(
+    (goal) => goal.month.slice(0, 7) === goalMonth,
+  );
+  useEffect(() => {
+    if (!goalOpen) return;
+    setGoalError("");
+    setGoalForm({
+      revenue: selectedGoal ? String(selectedGoal.revenue_target) : "",
+      sales: selectedGoal ? String(selectedGoal.sales_target) : "",
+    });
+  }, [goalMonth, goalOpen, selectedGoal]);
+  const saveGoal = useMutation({
+    mutationFn: async () => {
+      const revenueTarget = Number(goalForm.revenue);
+      const salesTarget = Number(goalForm.sales);
+      if (!Number.isFinite(revenueTarget) || revenueTarget <= 0) {
+        throw new Error("Informe uma meta de faturamento maior que zero.");
+      }
+      if (!Number.isInteger(salesTarget) || salesTarget <= 0) {
+        throw new Error("Informe uma quantidade inteira de vendas maior que zero.");
+      }
+      const [{ data: orgId, error: orgError }, { data: userData }] = await Promise.all([
+        supabase.rpc("current_org_id"),
+        supabase.auth.getUser(),
+      ]);
+      if (orgError || !orgId) throw new Error(orgError?.message ?? "Organização não encontrada.");
+      if (!userData.user) throw new Error("Sua sessão expirou. Entre novamente.");
+      const { error } = await supabase.from("commercial_goals").upsert(
+        {
+          org_id: orgId,
+          month: `${goalMonth}-01`,
+          revenue_target: revenueTarget,
+          sales_target: salesTarget,
+          created_by: selectedGoal?.created_by ?? userData.user.id,
+        },
+        { onConflict: "org_id,month" },
+      );
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["commercial-goals"] });
+      toast.success("Meta comercial salva.");
+      setGoalOpen(false);
+    },
+    onError: (error: Error) => setGoalError(error.message),
   });
   const deleteLead = useMutation({
     mutationFn: async (lead: LeadRow) => {
@@ -383,17 +459,16 @@ function CommercialPage() {
     const convertedLeadIds = new Set(
       cohortWon.map((opportunity) => opportunity.lead_id).filter(Boolean),
     );
-    const wonInPeriod = (opportunities.data ?? []).filter((opportunity) => {
-      const closedDay = opportunity.closed_at?.slice(0, 10);
-      if (!closedDay) return false;
-      return (
-        opportunity.stage === "ganha" &&
-        closedDay >= dashboardFrom &&
-        closedDay <= dashboardTo &&
-        Boolean(opportunity.lead_id && dimensionLeadIds.has(opportunity.lead_id))
-      );
+    const opportunityById = new Map(
+      (opportunities.data ?? []).map((opportunity) => [opportunity.id, opportunity]),
+    );
+    const salesInPeriod = (commercialSales.data ?? []).filter((sale) => {
+      if (sale.sale_date < dashboardFrom || sale.sale_date > dashboardTo) return false;
+      if (sourceFilter === "todos" && ownerFilter === "todos") return true;
+      const opportunity = sale.opportunity_id ? opportunityById.get(sale.opportunity_id) : null;
+      return Boolean(opportunity?.lead_id && dimensionLeadIds.has(opportunity.lead_id));
     });
-    const revenue = wonInPeriod.reduce((sum, opportunity) => sum + Number(opportunity.amount), 0);
+    const revenue = salesInPeriod.reduce((sum, sale) => sum + Number(sale.net_amount), 0);
     const origins = Array.from(
       filteredLeads
         .reduce((map, lead) => {
@@ -461,7 +536,7 @@ function CommercialPage() {
       ([label, value]) => ({ label, value }),
     ).sort((a, b) => b.value - a.value);
     return {
-      sales: wonInPeriod.length,
+      sales: salesInPeriod.length,
       conversion: filteredLeads.length ? convertedLeadIds.size / filteredLeads.length : 0,
       revenue,
       overdue: overdueTasks.length + overdueDefinedActions.length,
@@ -474,12 +549,31 @@ function CommercialPage() {
     dashboardStageHistory.data,
     dashboardFrom,
     dashboardTo,
+    commercialSales.data,
     leads.data,
     opportunities.data,
     ownerFilter,
     sourceFilter,
     tasks.data,
   ]);
+  const goalProgress = useMemo(() => {
+    const sales = (commercialSales.data ?? []).filter((sale) =>
+      sale.sale_date.startsWith(goalMonth),
+    );
+    const revenue = sales.reduce((sum, sale) => sum + Number(sale.net_amount), 0);
+    const revenueTarget = Number(selectedGoal?.revenue_target ?? 0);
+    const salesTarget = Number(selectedGoal?.sales_target ?? 0);
+    return {
+      revenue,
+      sales: sales.length,
+      revenueTarget,
+      salesTarget,
+      revenuePercent: revenueTarget ? (revenue / revenueTarget) * 100 : 0,
+      salesPercent: salesTarget ? (sales.length / salesTarget) * 100 : 0,
+      remainingRevenue: Math.max(revenueTarget - revenue, 0),
+      remainingSales: Math.max(salesTarget - sales.length, 0),
+    };
+  }, [commercialSales.data, goalMonth, selectedGoal]);
   const sourceOptions = useMemo(
     () =>
       Array.from(
@@ -688,6 +782,104 @@ function CommercialPage() {
               </Select>
             </Field>
           </div>
+
+          <section className="panel p-5">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h3 className="font-semibold">Meta comercial mensal</h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Acompanhe somente faturamento vendido e quantidade de vendas
+                </p>
+              </div>
+              <div className="flex items-end gap-2">
+                <Field label="Mês">
+                  <Input
+                    type="month"
+                    className="w-44"
+                    value={goalMonth}
+                    onChange={(event) => {
+                      if (event.target.value) setGoalMonth(event.target.value);
+                    }}
+                  />
+                </Field>
+                <Button variant="outline" onClick={() => setGoalOpen(true)}>
+                  {selectedGoal ? "Ajustar meta" : "Definir meta"}
+                </Button>
+              </div>
+            </div>
+            {commercialGoals.isLoading ? (
+              <Skeleton className="mt-5 h-24 w-full" />
+            ) : commercialGoals.isError ? (
+              <p className="mt-5 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+                Não foi possível carregar as metas comerciais.
+              </p>
+            ) : selectedGoal ? (
+              <div className="mt-5 grid gap-5 md:grid-cols-2">
+                <GoalProgress
+                  label="Faturamento vendido"
+                  current={formatBRL(goalProgress.revenue)}
+                  target={formatBRL(goalProgress.revenueTarget)}
+                  percent={goalProgress.revenuePercent}
+                  remaining={`Faltam ${formatBRL(goalProgress.remainingRevenue)}`}
+                />
+                <GoalProgress
+                  label="Vendas concluídas"
+                  current={String(goalProgress.sales)}
+                  target={String(goalProgress.salesTarget)}
+                  percent={goalProgress.salesPercent}
+                  remaining={`Faltam ${goalProgress.remainingSales} ${goalProgress.remainingSales === 1 ? "venda" : "vendas"}`}
+                />
+              </div>
+            ) : (
+              <p className="mt-5 rounded-md bg-muted/50 p-4 text-sm text-muted-foreground">
+                Nenhuma meta definida para {formatMonth(goalMonth)}.
+              </p>
+            )}
+            <Dialog open={goalOpen} onOpenChange={setGoalOpen}>
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Meta de {formatMonth(goalMonth)}</DialogTitle>
+                </DialogHeader>
+                <div className="grid gap-4">
+                  <Field label="Meta de faturamento vendido (R$)">
+                    <Input
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      value={goalForm.revenue}
+                      onChange={(event) =>
+                        setGoalForm((current) => ({ ...current, revenue: event.target.value }))
+                      }
+                    />
+                  </Field>
+                  <Field label="Meta de vendas concluídas">
+                    <Input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={goalForm.sales}
+                      onChange={(event) =>
+                        setGoalForm((current) => ({ ...current, sales: event.target.value }))
+                      }
+                    />
+                  </Field>
+                  {goalError ? (
+                    <p className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+                      {goalError}
+                    </p>
+                  ) : null}
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setGoalOpen(false)}>
+                    Cancelar
+                  </Button>
+                  <Button disabled={saveGoal.isPending} onClick={() => saveGoal.mutate()}>
+                    {saveGoal.isPending ? "Salvando..." : "Salvar meta"}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </section>
 
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <Metric
@@ -1475,6 +1667,7 @@ function CloseSaleDialog({
         queryClient.invalidateQueries({ queryKey: ["crm-tasks"] }),
         queryClient.invalidateQueries({ queryKey: ["patients"] }),
         queryClient.invalidateQueries({ queryKey: ["sales"] }),
+        queryClient.invalidateQueries({ queryKey: ["commercial-sales"] }),
         queryClient.invalidateQueries({ queryKey: ["contracts"] }),
         queryClient.invalidateQueries({ queryKey: ["receivables"] }),
       ]);
@@ -2733,6 +2926,44 @@ function Metric({
         {label}
       </div>
       <p className="mt-2 text-metric text-2xl font-semibold">{value}</p>
+    </div>
+  );
+}
+
+function GoalProgress({
+  label,
+  current,
+  target,
+  percent,
+  remaining,
+}: {
+  label: string;
+  current: string;
+  target: string;
+  percent: number;
+  remaining: string;
+}) {
+  const completed = percent >= 100;
+  return (
+    <div>
+      <div className="flex items-start justify-between gap-4 text-sm">
+        <div>
+          <p className="font-medium">{label}</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {current} de {target}
+          </p>
+        </div>
+        <strong className={completed ? "text-emerald-700" : ""}>{percent.toFixed(0)}%</strong>
+      </div>
+      <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-muted">
+        <div
+          className={`h-full rounded-full transition-[width] ${completed ? "bg-emerald-600" : "bg-primary"}`}
+          style={{ width: `${Math.min(percent, 100)}%` }}
+        />
+      </div>
+      <p className="mt-2 text-xs text-muted-foreground">
+        {completed ? "Meta atingida" : remaining}
+      </p>
     </div>
   );
 }

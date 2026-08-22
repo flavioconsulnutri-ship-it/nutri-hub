@@ -422,6 +422,47 @@ export type Database = {
           },
         ]
       }
+      commercial_goals: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          id: string
+          month: string
+          org_id: string
+          revenue_target: number
+          sales_target: number
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          month: string
+          org_id: string
+          revenue_target: number
+          sales_target: number
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          month?: string
+          org_id?: string
+          revenue_target?: number
+          sales_target?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "commercial_goals_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       contracts: {
         Row: {
           consultations_included: number
