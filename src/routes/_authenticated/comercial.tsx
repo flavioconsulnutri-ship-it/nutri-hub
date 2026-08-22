@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Clock3, Pencil, Phone, Plus, UserRound } from "lucide-react";
+import { CheckCircle2, Clock3, Pencil, Phone, Plus, Trash2, UserRound } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -202,6 +202,32 @@ function CommercialPage() {
       if (error) throw new Error(error.message);
       return data;
     },
+  });
+  const deleteLead = useMutation({
+    mutationFn: async (lead: LeadRow) => {
+      const confirmed = window.confirm(
+        `Excluir definitivamente o lead "${lead.full_name}"? A negociação, as tarefas e o histórico comercial vinculados também serão excluídos.`,
+      );
+      if (!confirmed) return false;
+      const { error: opportunityError } = await supabase
+        .from("opportunities")
+        .delete()
+        .eq("lead_id", lead.id);
+      if (opportunityError) throw new Error(opportunityError.message);
+      const { error: leadError } = await supabase.from("leads").delete().eq("id", lead.id);
+      if (leadError) throw new Error(leadError.message);
+      return true;
+    },
+    onSuccess: async (deleted) => {
+      if (!deleted) return;
+      toast.success("Lead excluído com sucesso.");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["leads"] }),
+        queryClient.invalidateQueries({ queryKey: ["opportunities"] }),
+        queryClient.invalidateQueries({ queryKey: ["crm-tasks"] }),
+      ]);
+    },
+    onError: (error: Error) => toast.error(`Não foi possível excluir: ${error.message}`),
   });
 
   const move = useMutation({
@@ -460,9 +486,22 @@ function CommercialPage() {
                         {formatDate(lead.created_at)}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <Button size="sm" variant="outline" onClick={() => setEditingLead(lead)}>
-                          <Pencil className="size-4" /> Editar
-                        </Button>
+                        <div className="flex justify-end gap-2">
+                          <Button size="sm" variant="outline" onClick={() => setEditingLead(lead)}>
+                            <Pencil className="size-4" /> Editar
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            disabled={deleteLead.isPending}
+                            onClick={() => deleteLead.mutate(lead)}
+                          >
+                            <Trash2 className="size-4" />
+                            {deleteLead.isPending && deleteLead.variables?.id === lead.id
+                              ? "Excluindo..."
+                              : "Excluir"}
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   ))}
