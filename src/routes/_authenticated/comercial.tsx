@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, Clock3, Pencil, Phone, Plus, Trash2, UserRound } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { EmptyState, PageBody, PageHeader } from "@/components/AppShell";
@@ -29,7 +29,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { supabase } from "@/integrations/supabase/client";
 import type { Database } from "@/integrations/supabase/types";
-import { countryFlag, formatNationalPhone, phoneCountries } from "@/lib/countries";
+import {
+  countryFlag,
+  formatNationalPhone,
+  phoneCountries,
+  splitInternationalPhone,
+} from "@/lib/countries";
 import { formatBRL, formatDate, todayISO } from "@/lib/format";
 
 type FunnelStage = Database["public"]["Enums"]["funnel_stage"];
@@ -360,9 +365,25 @@ function CommercialPage() {
                             <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
                               <Phone className="size-3" /> {lead?.phone ?? "Sem telefone"}
                             </p>
-                            {lead?.main_goal ? (
-                              <p className="mt-2 line-clamp-2 text-xs">{lead.main_goal}</p>
-                            ) : null}
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {(lead?.main_goal ?? "")
+                                .split(",")
+                                .map((goal) => goal.trim())
+                                .filter(Boolean)
+                                .map((goal) => (
+                                  <span
+                                    key={goal}
+                                    className="rounded-full bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary"
+                                  >
+                                    🎯 {goal}
+                                  </span>
+                                ))}
+                              {item.next_action ? (
+                                <span className="rounded-full bg-amber-100 px-2 py-1 text-[11px] font-medium text-amber-800">
+                                  📌 {item.next_action}
+                                </span>
+                              ) : null}
+                            </div>
                             <div className="mt-3 flex items-center justify-between text-xs">
                               <span className="font-medium">{formatBRL(item.amount)}</span>
                               <span
@@ -521,6 +542,378 @@ function CommercialPage() {
 }
 
 function EditLeadDialog({ lead, onDone }: { lead: LeadRow; onDone: () => void }) {
+  const queryClient = useQueryClient();
+  const parsedPhone = splitInternationalPhone(lead.phone);
+  const originalGoals = (lead.main_goal ?? "")
+    .split(",")
+    .map((goal) => goal.trim())
+    .filter(Boolean);
+  const unknownGoals = originalGoals.filter((goal) => !leadGoals.includes(goal));
+  const [selectedGoals, setSelectedGoals] = useState<string[]>([
+    ...originalGoals.filter((goal) => leadGoals.includes(goal)),
+    ...(unknownGoals.length ? ["Outro"] : []),
+  ]);
+  const [formError, setFormError] = useState("");
+  const [form, setForm] = useState({
+    full_name: lead.full_name,
+    phone: parsedPhone.national,
+    phone_country: parsedPhone.iso,
+    email: lead.email ?? "",
+    lead_type: lead.lead_type,
+    source: lead.source ?? "",
+    referred_by: lead.referred_by ?? "",
+    other_goal: unknownGoals.join(", "),
+    temperature: lead.temperature ?? "morno",
+    owner_id: lead.owner_id ?? "",
+    notes: lead.notes ?? "",
+    next_action: "Responder primeiro contato",
+    custom_action: "",
+    action_details: "",
+    next_action_date: todayISO(),
+  });
+  const opportunity = useQuery({
+    queryKey: ["lead-opportunity", lead.id],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("opportunities")
+        .select("id, next_action, next_action_details, next_action_date, owner_id")
+        .eq("lead_id", lead.id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) throw new Error(error.message);
+      return data;
+    },
+  });
+  const profiles = useQuery({
+    queryKey: ["crm-responsibles"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, full_name")
+        .order("full_name");
+      if (error) throw new Error(error.message);
+      return data;
+    },
+  });
+  const customActions = useQuery({
+    queryKey: ["crm-action-catalog"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("crm_action_catalog")
+        .select("name")
+        .eq("active", true)
+        .order("name");
+      if (error) throw new Error(error.message);
+      return data;
+    },
+  });
+  useEffect(() => {
+    if (!opportunity.data) return;
+    const action = opportunity.data.next_action ?? "Responder primeiro contato";
+    const standard =
+      actionOptions.includes(action) ||
+      (customActions.data ?? []).some((item) => item.name === action);
+    setForm((current) => ({
+      ...current,
+      next_action: standard ? action : "Criar ação personalizada",
+      custom_action: standard ? "" : action,
+      action_details: opportunity.data?.next_action_details ?? "",
+      next_action_date: opportunity.data?.next_action_date ?? todayISO(),
+      owner_id: opportunity.data?.owner_id ?? current.owner_id,
+    }));
+  }, [opportunity.data, customActions.data]);
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const { data: userData } = await supabase.auth.getUser();
+      if (!userData.user) throw new Error("Sua sessão expirou. Entre novamente.");
+      const actionName =
+        form.next_action === "Criar ação personalizada"
+          ? form.custom_action.trim()
+          : form.next_action;
+      if (form.next_action === "Criar ação personalizada") {
+        const { error } = await supabase
+          .from("crm_action_catalog")
+          .upsert(
+            { org_id: lead.org_id, name: actionName, created_by: userData.user.id },
+            { onConflict: "org_id,name" },
+          );
+        if (error) throw new Error(error.message);
+      }
+      const mainGoal = [...selectedGoals.filter((goal) => goal !== "Outro"), form.other_goal.trim()]
+        .filter(Boolean)
+        .join(", ");
+      const country = phoneCountries.find((item) => item.iso === form.phone_country);
+      const { error: leadError } = await supabase
+        .from("leads")
+        .update({
+          full_name: form.full_name.trim(),
+          phone: `${country?.dial ?? "+55"}${form.phone.replace(/\D/g, "")}`,
+          email: form.email.trim() || null,
+          lead_type: form.lead_type,
+          source: form.source || null,
+          referred_by: form.referred_by.trim() || null,
+          main_goal: mainGoal || null,
+          temperature: form.temperature,
+          owner_id: form.owner_id || userData.user.id,
+          notes: form.notes.trim() || null,
+        })
+        .eq("id", lead.id);
+      if (leadError) throw new Error(leadError.message);
+      if (opportunity.data) {
+        const { error } = await supabase
+          .from("opportunities")
+          .update({
+            source: form.source || null,
+            owner_id: form.owner_id || userData.user.id,
+            next_action: actionName,
+            next_action_details: form.action_details.trim() || null,
+            next_action_date: form.next_action_date,
+          })
+          .eq("id", opportunity.data.id);
+        if (error) throw new Error(error.message);
+      }
+    },
+    onSuccess: async () => {
+      toast.success("Lead atualizado com sucesso.");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["leads"] }),
+        queryClient.invalidateQueries({ queryKey: ["opportunities"] }),
+        queryClient.invalidateQueries({ queryKey: ["crm-action-catalog"] }),
+      ]);
+      onDone();
+    },
+    onError: (error: Error) => setFormError(error.message),
+  });
+  const save = () => {
+    setFormError("");
+    if (!form.full_name.trim() || !form.phone.replace(/\D/g, ""))
+      return setFormError("Preencha o nome e o WhatsApp.");
+    if (!selectedGoals.length) return setFormError("Selecione pelo menos um objetivo.");
+    if (selectedGoals.includes("Outro") && !form.other_goal.trim())
+      return setFormError("Especifique o outro objetivo.");
+    if (form.next_action === "Criar ação personalizada" && !form.custom_action.trim())
+      return setFormError("Descreva a ação personalizada.");
+    if (!form.next_action_date) return setFormError("Selecione a data da próxima ação.");
+    mutation.mutate();
+  };
+
+  return (
+    <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+      <DialogHeader>
+        <DialogTitle>Editar lead</DialogTitle>
+      </DialogHeader>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="Nome" className="sm:col-span-2">
+          <Input
+            value={form.full_name}
+            onChange={(e) => setForm({ ...form, full_name: e.target.value })}
+          />
+        </Field>
+        <Field label="WhatsApp">
+          <div className="flex gap-2">
+            <Select
+              value={form.phone_country}
+              onValueChange={(value) =>
+                setForm({
+                  ...form,
+                  phone_country: value,
+                  phone: formatNationalPhone(form.phone, value),
+                })
+              }
+            >
+              <SelectTrigger className="w-52">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {phoneCountries.map((country) => (
+                  <SelectItem key={country.iso} value={country.iso}>
+                    {countryFlag(country.iso)} {country.name} ({country.dial})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Input
+              inputMode="tel"
+              value={form.phone}
+              onChange={(e) =>
+                setForm({ ...form, phone: formatNationalPhone(e.target.value, form.phone_country) })
+              }
+            />
+          </div>
+        </Field>
+        <Field label="E-mail">
+          <Input
+            type="email"
+            value={form.email}
+            onChange={(e) => setForm({ ...form, email: e.target.value })}
+          />
+        </Field>
+        <Field label="Tipo">
+          <Select
+            value={form.lead_type}
+            onValueChange={(value) => setForm({ ...form, lead_type: value })}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ex_paciente">Ex-paciente</SelectItem>
+              <SelectItem value="indicacao">Indicação</SelectItem>
+              <SelectItem value="lead_novo">Lead novo</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field label="Origem">
+          <Select
+            value={form.source}
+            onValueChange={(value) => setForm({ ...form, source: value })}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Selecione a origem" />
+            </SelectTrigger>
+            <SelectContent>
+              {[...leadSources, "Outro"].map((source) => (
+                <SelectItem key={source} value={source}>
+                  {source}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field label="Indicado por">
+          <Input
+            value={form.referred_by}
+            onChange={(e) => setForm({ ...form, referred_by: e.target.value })}
+          />
+        </Field>
+        <Field label="Temperatura">
+          <Select
+            value={form.temperature}
+            onValueChange={(value) => setForm({ ...form, temperature: value })}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="frio">❄️ Frio</SelectItem>
+              <SelectItem value="morno">🌤️ Morno</SelectItem>
+              <SelectItem value="quente">🔥 Quente</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field label="Responsável">
+          <Select
+            value={form.owner_id}
+            onValueChange={(value) => setForm({ ...form, owner_id: value })}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Eu (padrão)" />
+            </SelectTrigger>
+            <SelectContent>
+              {(profiles.data ?? []).map((profile) => (
+                <SelectItem key={profile.id} value={profile.id}>
+                  {profile.full_name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field label="Objetivos" className="sm:col-span-2">
+          <div className="grid gap-2 rounded-md border p-3 sm:grid-cols-2">
+            {[...leadGoals, "Outro"].map((goal) => (
+              <label key={goal} className="flex cursor-pointer items-center gap-2 text-sm">
+                <Checkbox
+                  checked={selectedGoals.includes(goal)}
+                  onCheckedChange={(checked) =>
+                    setSelectedGoals(
+                      checked
+                        ? [...selectedGoals, goal]
+                        : selectedGoals.filter((item) => item !== goal),
+                    )
+                  }
+                />
+                {goal}
+              </label>
+            ))}
+          </div>
+        </Field>
+        {selectedGoals.includes("Outro") ? (
+          <Field label="Especifique o objetivo" className="sm:col-span-2">
+            <Input
+              value={form.other_goal}
+              onChange={(e) => setForm({ ...form, other_goal: e.target.value })}
+            />
+          </Field>
+        ) : null}
+        <Field label="Próxima ação">
+          <Select
+            value={form.next_action}
+            onValueChange={(value) => setForm({ ...form, next_action: value })}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {[...actionOptions, ...(customActions.data ?? []).map((item) => item.name)]
+                .filter((action, index, list) => list.indexOf(action) === index)
+                .sort((a, b) => a.localeCompare(b, "pt-BR"))
+                .concat("Criar ação personalizada")
+                .map((action) => (
+                  <SelectItem key={action} value={action}>
+                    {action}
+                  </SelectItem>
+                ))}
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field label="Data da próxima ação">
+          <Input
+            type="date"
+            value={form.next_action_date}
+            onChange={(e) => setForm({ ...form, next_action_date: e.target.value })}
+          />
+        </Field>
+        {form.next_action === "Criar ação personalizada" ? (
+          <Field label="Nome da ação personalizada" className="sm:col-span-2">
+            <Input
+              value={form.custom_action}
+              onChange={(e) => setForm({ ...form, custom_action: e.target.value })}
+            />
+          </Field>
+        ) : null}
+        <Field label="Complemento da próxima ação" className="sm:col-span-2">
+          <Input
+            value={form.action_details}
+            onChange={(e) => setForm({ ...form, action_details: e.target.value })}
+          />
+        </Field>
+        <Field label="Observações" className="sm:col-span-2">
+          <Textarea
+            rows={4}
+            value={form.notes}
+            onChange={(e) => setForm({ ...form, notes: e.target.value })}
+          />
+        </Field>
+        {formError ? (
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive sm:col-span-2">
+            Não foi possível salvar: {formError}
+          </div>
+        ) : null}
+        <DialogFooter className="sm:col-span-2">
+          <Button type="button" variant="outline" onClick={onDone}>
+            Cancelar
+          </Button>
+          <Button type="button" disabled={mutation.isPending} onClick={save}>
+            {mutation.isPending ? "Salvando..." : "Salvar alterações"}
+          </Button>
+        </DialogFooter>
+      </div>
+    </DialogContent>
+  );
+}
+
+function LegacyEditLeadDialog({ lead, onDone }: { lead: LeadRow; onDone: () => void }) {
   const queryClient = useQueryClient();
   const [formError, setFormError] = useState("");
   const [form, setForm] = useState({

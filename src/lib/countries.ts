@@ -237,3 +237,16 @@ export function formatNationalPhone(value: string, iso: string) {
     return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6, 10)}`.replace(/-$/, "");
   return digits.replace(/(\d{3})(?=\d)/g, "$1 ").trim();
 }
+
+export function splitInternationalPhone(value: string) {
+  const normalized = value.replace(/\D/g, "");
+  const candidates = phoneCountries
+    .filter((country) => normalized.startsWith(country.dial.slice(1)))
+    .sort((a, b) => b.dial.length - a.dial.length);
+  const country =
+    candidates.find((item) => item.iso === "BR") ??
+    candidates[0] ??
+    phoneCountries.find((item) => item.iso === "BR")!;
+  const national = normalized.slice(country.dial.length - 1);
+  return { iso: country.iso, national: formatNationalPhone(national, country.iso) };
+}
