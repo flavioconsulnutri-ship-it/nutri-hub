@@ -48,7 +48,7 @@ import {
 } from "@/lib/countries";
 import { formatBRL, formatDate, todayISO } from "@/lib/format";
 import { paymentMethodLabel } from "@/lib/labels";
-import { registerWonSale } from "@/lib/sales.functions";
+import { previewWonSale, registerWonSale } from "@/lib/sales.functions";
 import { seedCatalog } from "@/lib/setup.functions";
 
 type FunnelStage = Database["public"]["Enums"]["funnel_stage"];
@@ -1409,6 +1409,31 @@ function CloseSaleDialog({
   const estimatedNet = Math.max(0, paymentConditionAmount - additionalDiscount);
   const totalDiscount = Math.max(0, grossAmount - estimatedNet);
 
+  const financialPreview = useQuery({
+    queryKey: [
+      "sale-financial-preview",
+      form.plan_id,
+      form.payment_method,
+      form.sale_date,
+      form.discount,
+      form.installments,
+      form.down_payment,
+    ],
+    enabled: Boolean(form.plan_id && form.sale_date),
+    queryFn: () =>
+      previewWonSale({
+        data: {
+          planId: form.plan_id,
+          paymentMethod: form.payment_method,
+          saleDate: form.sale_date,
+          discount: Number(form.discount || 0),
+          installments: Number(form.installments || 1),
+          downPayment: Number(form.down_payment || 0),
+        },
+      }),
+    staleTime: 30_000,
+  });
+
   const setupCatalog = useMutation({
     mutationFn: () => seedCatalog(),
     onSuccess: async (created) => {
@@ -1607,6 +1632,88 @@ function CloseSaleDialog({
             <p className="mt-1 text-lg font-semibold text-emerald-950">{formatBRL(estimatedNet)}</p>
           </div>
         </div>
+        {financialPreview.data ? (
+          <section className="space-y-4 rounded-xl border border-blue-200 bg-blue-50/60 p-4 sm:col-span-2">
+            <div>
+              <h3 className="font-semibold text-blue-950">Impacto financeiro desta venda</h3>
+              <p className="mt-1 text-sm text-blue-900/80">
+                Prévia do que será criado no Financeiro e na DRE após a confirmação.
+              </p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-lg border bg-white p-3">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  DRE — regime de competência
+                </p>
+                <p className="mt-2 text-sm">
+                  Receita líquida distribuída de {formatDate(form.sale_date)} até{" "}
+                  {formatDate(financialPreview.data.endDate)}.
+                </p>
+                <p className="mt-2 font-semibold">
+                  Aproximadamente {formatBRL(financialPreview.data.recognition[0]?.net_amount ?? 0)}
+                  /mês por {financialPreview.data.recognition.length} meses
+                </p>
+              </div>
+              <div className="rounded-lg border bg-white p-3">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Fluxo de caixa
+                </p>
+                <p className="mt-2 text-sm">
+                  {financialPreview.data.installments.length} lançamento(s) previsto(s), totalizando{" "}
+                  {formatBRL(financialPreview.data.netAmount)}.
+                </p>
+                <p className="mt-2 text-sm font-medium">
+                  Recebido automaticamente agora: {formatBRL(0)}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  O dinheiro só entra no caixa após a baixa do recebimento no módulo Financeiro.
+                </p>
+              </div>
+            </div>
+            <div className="rounded-lg border bg-white p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-semibold">Previsão das parcelas</p>
+                <p className="text-xs text-muted-foreground">
+                  Conta financeira será definida na baixa
+                </p>
+              </div>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {financialPreview.data.installments.map((installment) => (
+                  <div
+                    key={`${installment.installment_number}-${installment.due_date}`}
+                    className="flex items-center justify-between rounded-md bg-muted/50 px-3 py-2 text-sm"
+                  >
+                    <span>
+                      Parcela {installment.installment_number}/{installment.installment_total} ·{" "}
+                      {formatDate(installment.due_date)}
+                    </span>
+                    <strong>{formatBRL(installment.expected_amount)}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="grid gap-2 text-sm sm:grid-cols-3">
+              <DetailItem
+                label="Entrada informada"
+                value={formatBRL(financialPreview.data.downPayment)}
+              />
+              <DetailItem
+                label="Restante após a entrada"
+                value={formatBRL(
+                  Math.max(0, financialPreview.data.netAmount - financialPreview.data.downPayment),
+                )}
+              />
+              <DetailItem
+                label="Contato para renovação"
+                value={formatDate(financialPreview.data.expectedRenewalDate)}
+              />
+            </div>
+          </section>
+        ) : financialPreview.isFetching ? (
+          <div className="rounded-lg border p-4 text-sm text-muted-foreground sm:col-span-2">
+            Calculando o impacto financeiro...
+          </div>
+        ) : null}
         <label className="flex items-center gap-3 rounded-lg border p-3 sm:col-span-2">
           <Checkbox
             checked={form.is_renewal}

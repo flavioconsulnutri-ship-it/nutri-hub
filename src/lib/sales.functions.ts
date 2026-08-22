@@ -25,6 +25,74 @@ export type WonSaleInput = {
   notes?: string | null;
 };
 
+export type SalePreviewInput = Pick<
+  WonSaleInput,
+  "planId" | "paymentMethod" | "saleDate" | "discount" | "installments" | "downPayment"
+>;
+
+/** Usa as mesmas regras financeiras do fechamento para explicar o impacto antes da confirmação. */
+export const previewWonSale = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: SalePreviewInput) => {
+    if (!input.planId) throw new Error("Selecione o plano.");
+    if (!input.saleDate) throw new Error("Informe a data da venda.");
+    return input;
+  })
+  .handler(async ({ data, context }) => {
+    const { supabase, userId } = context;
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("org_id")
+      .eq("id", userId)
+      .maybeSingle();
+    if (!profile) throw new Error("Perfil não encontrado.");
+
+    const { data: plan, error } = await supabase
+      .from("plans")
+      .select("*")
+      .eq("id", data.planId)
+      .eq("org_id", profile.org_id)
+      .maybeSingle();
+    if (error || !plan) throw new Error("Plano não encontrado.");
+
+    const { listCents, chargedCents } = listPriceForMethod(plan, data.paymentMethod);
+    const explicitDiscount = Math.max(0, toCents(data.discount));
+    const totalDiscount = Math.max(0, listCents - chargedCents) + explicitDiscount;
+    const netCents = Math.max(0, listCents - totalDiscount);
+    const installments =
+      data.paymentMethod === "cartao_credito"
+        ? Math.max(1, data.installments || plan.installment_count || 1)
+        : Math.max(1, data.installments || 1);
+    const installmentRows = buildInstallments({
+      netAmountCents: netCents,
+      installments,
+      downPaymentCents: toCents(data.downPayment || 0),
+      saleDate: data.saleDate,
+    });
+    const recognition = buildRecognition({
+      listAmountCents: listCents,
+      discountCents: totalDiscount,
+      months: plan.duration_months,
+      startDate: data.saleDate,
+    });
+    const endDate = addDays(addMonths(data.saleDate, plan.duration_months), -1);
+
+    return {
+      planName: plan.name,
+      grossAmount: fromCents(listCents),
+      totalDiscount: fromCents(totalDiscount),
+      netAmount: fromCents(netCents),
+      downPayment: Math.min(fromCents(netCents), Math.max(0, Number(data.downPayment || 0))),
+      installments: installmentRows,
+      recognition: recognition.map((row) => ({
+        ...row,
+        net_amount: Math.max(0, row.gross_amount - row.deduction_amount),
+      })),
+      endDate,
+      expectedRenewalDate: addDays(endDate, -30),
+    };
+  });
+
 /**
  * Regra central do sistema: transforma uma venda ganha em contrato, parcelas a
  * receber e reconhecimento de receita por competência (rateado pelos meses do
