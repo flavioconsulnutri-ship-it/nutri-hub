@@ -883,6 +883,51 @@ export type Database = {
           },
         ]
       }
+      opportunity_stage_history: {
+        Row: {
+          changed_at: string
+          changed_by: string | null
+          from_stage: Database["public"]["Enums"]["funnel_stage"] | null
+          id: string
+          opportunity_id: string
+          org_id: string
+          to_stage: Database["public"]["Enums"]["funnel_stage"]
+        }
+        Insert: {
+          changed_at?: string
+          changed_by?: string | null
+          from_stage?: Database["public"]["Enums"]["funnel_stage"] | null
+          id?: string
+          opportunity_id: string
+          org_id: string
+          to_stage: Database["public"]["Enums"]["funnel_stage"]
+        }
+        Update: {
+          changed_at?: string
+          changed_by?: string | null
+          from_stage?: Database["public"]["Enums"]["funnel_stage"] | null
+          id?: string
+          opportunity_id?: string
+          org_id?: string
+          to_stage?: Database["public"]["Enums"]["funnel_stage"]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "opportunity_stage_history_opportunity_id_fkey"
+            columns: ["opportunity_id"]
+            isOneToOne: false
+            referencedRelation: "opportunities"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "opportunity_stage_history_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       organizations: {
         Row: {
           created_at: string

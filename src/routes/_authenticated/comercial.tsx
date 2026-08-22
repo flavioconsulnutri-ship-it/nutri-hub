@@ -68,6 +68,11 @@ type AgendaEntry = {
   taskId: string | null;
 };
 const alphabetical = (items: string[]) => [...items].sort((a, b) => a.localeCompare(b, "pt-BR"));
+const formatDateTime = (value: string) =>
+  new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(new Date(value));
 const leadSources = alphabetical([
   "Instagram",
   "WhatsApp",
@@ -278,6 +283,19 @@ function CommercialPage() {
       return data;
     },
   });
+  const stageHistory = useQuery({
+    queryKey: ["opportunity-stage-history", selectedOpportunityId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("opportunity_stage_history")
+        .select("id, from_stage, to_stage, changed_at")
+        .eq("opportunity_id", selectedOpportunityId!)
+        .order("changed_at", { ascending: false });
+      if (error) throw new Error(error.message);
+      return data;
+    },
+    enabled: selectedOpportunityId !== null,
+  });
   const deleteLead = useMutation({
     mutationFn: async (lead: LeadRow) => {
       const confirmed = window.confirm(
@@ -300,6 +318,7 @@ function CommercialPage() {
         queryClient.invalidateQueries({ queryKey: ["leads"] }),
         queryClient.invalidateQueries({ queryKey: ["opportunities"] }),
         queryClient.invalidateQueries({ queryKey: ["crm-tasks"] }),
+        queryClient.invalidateQueries({ queryKey: ["opportunity-stage-history"] }),
       ]);
     },
     onError: (error: Error) => toast.error(`Não foi possível excluir: ${error.message}`),
@@ -332,6 +351,7 @@ function CommercialPage() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["opportunities"] }),
         queryClient.invalidateQueries({ queryKey: ["crm-tasks"] }),
+        queryClient.invalidateQueries({ queryKey: ["opportunity-stage-history"] }),
       ]);
     },
     onError: (error: Error) => toast.error(error.message),
@@ -1326,6 +1346,42 @@ function CommercialPage() {
                   className="sm:col-span-2"
                 />
               ) : null}
+            </div>
+            <div className="rounded-lg border bg-muted/20 p-4">
+              <div className="mb-3 flex items-center gap-2">
+                <Clock3 className="size-4 text-muted-foreground" />
+                <h3 className="text-sm font-semibold">Histórico do funil</h3>
+              </div>
+              {stageHistory.isLoading ? (
+                <Skeleton className="h-12 w-full" />
+              ) : stageHistory.isError ? (
+                <p className="text-sm text-destructive">Não foi possível carregar o histórico.</p>
+              ) : stageHistory.data?.length ? (
+                <ol className="max-h-44 space-y-2 overflow-y-auto pr-1">
+                  {stageHistory.data.map((entry) => {
+                    const fromLabel = stages.find(
+                      (stage) => stage.value === entry.from_stage,
+                    )?.label;
+                    const toLabel =
+                      stages.find((stage) => stage.value === entry.to_stage)?.label ??
+                      entry.to_stage;
+                    return (
+                      <li key={entry.id} className="flex items-start justify-between gap-4 text-sm">
+                        <span>
+                          {fromLabel ? `${fromLabel} → ${toLabel}` : `Entrou em ${toLabel}`}
+                        </span>
+                        <time className="shrink-0 text-xs text-muted-foreground">
+                          {formatDateTime(entry.changed_at)}
+                        </time>
+                      </li>
+                    );
+                  })}
+                </ol>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  O histórico começará a ser registrado a partir desta versão.
+                </p>
+              )}
             </div>
             <DialogFooter>
               {selectedLead ? (
