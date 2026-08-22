@@ -555,6 +555,11 @@ function NewLeadDialog({ onDone }: { onDone: () => void }) {
             onChange={(e) => setForm({ ...form, notes: e.target.value })}
           />
         </Field>
+        {mutation.error ? (
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive sm:col-span-2">
+            Não foi possível cadastrar: {mutation.error.message}
+          </div>
+        ) : null}
         <DialogFooter className="sm:col-span-2">
           <Button type="submit" disabled={mutation.isPending}>
             <UserRound className="size-4" /> Cadastrar lead
