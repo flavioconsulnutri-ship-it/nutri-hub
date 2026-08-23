@@ -171,6 +171,44 @@ export const settlePayable = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+/** Ajusta a data prevista de um recebimento ainda em aberto. */
+export const updateReceivableDueDate = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: { receivableId: string; dueDate: string }) => {
+    if (!input.receivableId) throw new Error("Recebimento não informado.");
+    if (!input.dueDate) throw new Error("Informe a nova data prevista.");
+    return input;
+  })
+  .handler(async ({ data, context }) => {
+    const { supabase } = context;
+    const { error } = await supabase
+      .from("receivables")
+      .update({ due_date: data.dueDate, status: "pendente" as never })
+      .eq("id", data.receivableId)
+      .in("status", ["previsto", "pendente", "parcialmente_recebido", "vencido"]);
+    if (error) throw new Error(`Não foi possível alterar a data: ${error.message}`);
+    return { ok: true };
+  });
+
+/** Ajusta o vencimento de uma despesa ainda em aberto. */
+export const updatePayableDueDate = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: { payableId: string; dueDate: string }) => {
+    if (!input.payableId) throw new Error("Despesa não informada.");
+    if (!input.dueDate) throw new Error("Informe o novo vencimento.");
+    return input;
+  })
+  .handler(async ({ data, context }) => {
+    const { supabase } = context;
+    const { error } = await supabase
+      .from("payables")
+      .update({ due_date: data.dueDate, status: "pendente" as never })
+      .eq("id", data.payableId)
+      .in("status", ["previsto", "pendente", "parcialmente_pago", "vencido"]);
+    if (error) throw new Error(`Não foi possível alterar o vencimento: ${error.message}`);
+    return { ok: true };
+  });
+
 /** Marca como vencidas as parcelas e despesas em atraso e sinaliza pacientes inadimplentes. */
 export const refreshOverdue = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])

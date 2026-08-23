@@ -1,9 +1,28 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { AlertTriangle, ArrowDownLeft, ArrowUpRight, Landmark, WalletCards } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowDownLeft,
+  ArrowUpRight,
+  CalendarClock,
+  CheckCircle2,
+  Landmark,
+  WalletCards,
+} from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
+import { toast } from "sonner";
 
 import { PageBody, PageHeader } from "@/components/AppShell";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -11,10 +30,48 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSession } from "@/hooks/useSession";
 import { supabase } from "@/integrations/supabase/client";
 import type { Database } from "@/integrations/supabase/types";
+import {
+  settlePayable,
+  settleReceivable,
+  updatePayableDueDate,
+  updateReceivableDueDate,
+} from "@/lib/finance.functions";
 import { formatBRL, formatDate, monthEndISO, monthStartISO, todayISO } from "@/lib/format";
-import { receivableStatusLabel, receivableStatusTone } from "@/lib/labels";
+import {
+  payableStatusLabel,
+  paymentMethodLabel,
+  receivableStatusLabel,
+  receivableStatusTone,
+} from "@/lib/labels";
 
 type ReceivableStatus = Database["public"]["Enums"]["receivable_status"];
+type PaymentMethod = Database["public"]["Enums"]["payment_method"];
+type FinancialAccount = Pick<
+  Database["public"]["Tables"]["financial_accounts"]["Row"],
+  "id" | "name"
+>;
+type ReceivableItem = Pick<
+  Database["public"]["Tables"]["receivables"]["Row"],
+  | "id"
+  | "description"
+  | "due_date"
+  | "expected_amount"
+  | "received_amount"
+  | "status"
+  | "payment_method"
+  | "account_id"
+> & { patients: { full_name: string } | null };
+type PayableItem = Pick<
+  Database["public"]["Tables"]["payables"]["Row"],
+  | "id"
+  | "description"
+  | "supplier"
+  | "due_date"
+  | "expected_amount"
+  | "paid_amount"
+  | "status"
+  | "account_id"
+>;
 
 const openReceivableStatuses: ReceivableStatus[] = [
   "previsto",
@@ -53,7 +110,7 @@ function FinancialPage() {
     enabled: canViewFinancial,
     queryFn: async () => {
       const [accounts, cash, receivables, payables, recognition] = await Promise.all([
-        supabase.from("financial_accounts").select("id, initial_balance"),
+        supabase.from("financial_accounts").select("id, name, initial_balance").order("name"),
         supabase
           .from("cash_transactions")
           .select("id, direction, settled_at, amount, description, is_reversal")
@@ -63,14 +120,16 @@ function FinancialPage() {
         supabase
           .from("receivables")
           .select(
-            "id, description, due_date, expected_amount, received_amount, status, patients(full_name)",
+            "id, description, due_date, expected_amount, received_amount, status, payment_method, account_id, patients(full_name)",
           )
           .in("status", openReceivableStatuses)
           .order("due_date")
           .limit(1000),
         supabase
           .from("payables")
-          .select("id, description, due_date, expected_amount, paid_amount, status")
+          .select(
+            "id, description, supplier, due_date, expected_amount, paid_amount, status, account_id",
+          )
           .in("status", openPayableStatuses)
           .order("due_date")
           .limit(1000),
@@ -249,9 +308,7 @@ function FinancialPage() {
         <TabsList>
           <TabsTrigger value="overview">Visão geral</TabsTrigger>
           <TabsTrigger value="cash">Fluxo de caixa</TabsTrigger>
-          <TabsTrigger value="commitments" disabled>
-            Contas a pagar e receber
-          </TabsTrigger>
+          <TabsTrigger value="commitments">Contas a pagar e receber</TabsTrigger>
           <TabsTrigger value="dre" disabled>
             DRE
           </TabsTrigger>
@@ -510,8 +567,369 @@ function FinancialPage() {
             </>
           )}
         </TabsContent>
+
+        <TabsContent value="commitments" className="mt-5 space-y-6">
+          {financial.isError ? (
+            <div className="panel border-destructive/30 p-5 text-sm text-destructive">
+              Não foi possível carregar as contas. Atualize a página e tente novamente.
+            </div>
+          ) : financial.isLoading || !financial.data ? (
+            <Skeleton className="h-72 rounded-xl" />
+          ) : (
+            <>
+              <CommitmentTable
+                title="Contas a receber"
+                description="Confirme a entrada no caixa ou ajuste a data prevista do repasse."
+                empty="Nenhum recebimento em aberto."
+                headers={["Recebimento", "Paciente", "Data prevista", "Saldo", "Situação", ""]}
+              >
+                {(financial.data.receivables as ReceivableItem[]).map((item) => {
+                  const remaining = Math.max(
+                    0,
+                    Number(item.expected_amount) - Number(item.received_amount),
+                  );
+                  const isCard = item.payment_method === "cartao_credito";
+                  const isOverdue = item.due_date < todayISO();
+                  const status = isOverdue ? "vencido" : item.status;
+                  const statusLabel = isCard
+                    ? isOverdue
+                      ? "Repasse atrasado"
+                      : "Repasse pendente"
+                    : receivableStatusLabel[status];
+                  return (
+                    <tr key={item.id}>
+                      <td className="px-4 py-3 font-medium">{item.description}</td>
+                      <td className="px-4 py-3">{item.patients?.full_name ?? "—"}</td>
+                      <td className="px-4 py-3">{formatDate(item.due_date)}</td>
+                      <td className="px-4 py-3 text-right font-medium">{formatBRL(remaining)}</td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${receivableStatusTone[status]}`}
+                        >
+                          {statusLabel}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <ReceivableActions
+                          item={item}
+                          accounts={financial.data.accounts as FinancialAccount[]}
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </CommitmentTable>
+
+              <CommitmentTable
+                title="Contas a pagar"
+                description="Confirme a saída do caixa ou ajuste o vencimento da despesa."
+                empty="Nenhuma despesa em aberto."
+                headers={["Despesa", "Fornecedor", "Vencimento", "Saldo", "Situação", ""]}
+              >
+                {(financial.data.payables as PayableItem[]).map((item) => {
+                  const remaining = Math.max(
+                    0,
+                    Number(item.expected_amount) - Number(item.paid_amount),
+                  );
+                  const status = item.due_date < todayISO() ? "vencido" : item.status;
+                  return (
+                    <tr key={item.id}>
+                      <td className="px-4 py-3 font-medium">{item.description}</td>
+                      <td className="px-4 py-3">{item.supplier ?? "—"}</td>
+                      <td className="px-4 py-3">{formatDate(item.due_date)}</td>
+                      <td className="px-4 py-3 text-right font-medium">{formatBRL(remaining)}</td>
+                      <td className="px-4 py-3">{payableStatusLabel[status]}</td>
+                      <td className="px-4 py-3 text-right">
+                        <PayableActions
+                          item={item}
+                          accounts={financial.data.accounts as FinancialAccount[]}
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </CommitmentTable>
+            </>
+          )}
+        </TabsContent>
       </Tabs>
     </PageBody>
+  );
+}
+
+function CommitmentTable({
+  title,
+  description,
+  headers,
+  empty,
+  children,
+}: {
+  title: string;
+  description: string;
+  headers: string[];
+  empty: string;
+  children: ReactNode;
+}) {
+  const rows = Array.isArray(children) ? children : children ? [children] : [];
+  return (
+    <section className="panel overflow-hidden">
+      <div className="border-b border-border p-4">
+        <h2 className="font-semibold">{title}</h2>
+        <p className="text-xs text-muted-foreground">{description}</p>
+      </div>
+      {rows.length ? (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/40 text-left text-xs text-muted-foreground">
+              <tr>
+                {headers.map((header, index) => (
+                  <th
+                    key={`${header}-${index}`}
+                    className={`px-4 py-3 font-medium ${index === 3 || index === 5 ? "text-right" : ""}`}
+                  >
+                    {header}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">{children}</tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="p-6 text-sm text-muted-foreground">{empty}</p>
+      )}
+    </section>
+  );
+}
+
+function ReceivableActions({
+  item,
+  accounts,
+}: {
+  item: ReceivableItem;
+  accounts: FinancialAccount[];
+}) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [dueDate, setDueDate] = useState(item.due_date);
+  const [settledAt, setSettledAt] = useState(todayISO());
+  const [accountId, setAccountId] = useState(item.account_id ?? accounts[0]?.id ?? "");
+  const remaining = Math.max(0, Number(item.expected_amount) - Number(item.received_amount));
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["financial-overview"] });
+
+  const updateDate = useMutation({
+    mutationFn: () => updateReceivableDueDate({ data: { receivableId: item.id, dueDate } }),
+    onSuccess: async () => {
+      toast.success("Data prevista atualizada.");
+      await invalidate();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+  const settle = useMutation({
+    mutationFn: () =>
+      settleReceivable({
+        data: {
+          receivableId: item.id,
+          amount: remaining,
+          settledAt,
+          accountId,
+          paymentMethod: item.payment_method ?? "pix",
+        },
+      }),
+    onSuccess: async () => {
+      toast.success("Recebimento confirmado e lançado no caixa.");
+      setOpen(false);
+      await invalidate();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button type="button" variant="outline" size="sm">
+          Gerenciar
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Gerenciar recebimento</DialogTitle>
+          <DialogDescription>
+            {item.description} · saldo de {formatBRL(remaining)}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3 rounded-lg border p-4">
+          <div className="flex items-center gap-2 font-medium">
+            <CalendarClock className="size-4" /> Ajustar data prevista
+          </div>
+          <div className="flex gap-2">
+            <Input
+              type="date"
+              value={dueDate}
+              onChange={(event) => setDueDate(event.target.value)}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!dueDate || updateDate.isPending}
+              onClick={() => updateDate.mutate()}
+            >
+              Salvar data
+            </Button>
+          </div>
+        </div>
+
+        <div className="space-y-3 rounded-lg border border-emerald-200 bg-emerald-50/60 p-4">
+          <div className="flex items-center gap-2 font-medium text-emerald-950">
+            <CheckCircle2 className="size-4" /> Confirmar entrada no caixa
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1">
+              <Label>Data do recebimento</Label>
+              <Input
+                type="date"
+                value={settledAt}
+                onChange={(event) => setSettledAt(event.target.value)}
+              />
+            </div>
+            <AccountSelect accounts={accounts} value={accountId} onChange={setAccountId} />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Forma de pagamento: {paymentMethodLabel[item.payment_method ?? "pix"]}
+          </p>
+        </div>
+
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+            Fechar
+          </Button>
+          <Button
+            type="button"
+            disabled={!accountId || !settledAt || settle.isPending}
+            onClick={() => settle.mutate()}
+          >
+            {settle.isPending ? "Confirmando..." : `Confirmar ${formatBRL(remaining)}`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function PayableActions({ item, accounts }: { item: PayableItem; accounts: FinancialAccount[] }) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [dueDate, setDueDate] = useState(item.due_date);
+  const [settledAt, setSettledAt] = useState(todayISO());
+  const [accountId, setAccountId] = useState(item.account_id ?? accounts[0]?.id ?? "");
+  const remaining = Math.max(0, Number(item.expected_amount) - Number(item.paid_amount));
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["financial-overview"] });
+
+  const updateDate = useMutation({
+    mutationFn: () => updatePayableDueDate({ data: { payableId: item.id, dueDate } }),
+    onSuccess: async () => {
+      toast.success("Vencimento atualizado.");
+      await invalidate();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+  const settle = useMutation({
+    mutationFn: () =>
+      settlePayable({ data: { payableId: item.id, amount: remaining, settledAt, accountId } }),
+    onSuccess: async () => {
+      toast.success("Pagamento confirmado e lançado no caixa.");
+      setOpen(false);
+      await invalidate();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button type="button" variant="outline" size="sm">
+          Gerenciar
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Gerenciar pagamento</DialogTitle>
+          <DialogDescription>
+            {item.description} · saldo de {formatBRL(remaining)}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <Label>Novo vencimento</Label>
+          <div className="flex gap-2">
+            <Input
+              type="date"
+              value={dueDate}
+              onChange={(event) => setDueDate(event.target.value)}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!dueDate || updateDate.isPending}
+              onClick={() => updateDate.mutate()}
+            >
+              Salvar data
+            </Button>
+          </div>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1">
+            <Label>Data do pagamento</Label>
+            <Input
+              type="date"
+              value={settledAt}
+              onChange={(event) => setSettledAt(event.target.value)}
+            />
+          </div>
+          <AccountSelect accounts={accounts} value={accountId} onChange={setAccountId} />
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+            Fechar
+          </Button>
+          <Button
+            type="button"
+            disabled={!accountId || !settledAt || settle.isPending}
+            onClick={() => settle.mutate()}
+          >
+            {settle.isPending ? "Confirmando..." : `Confirmar ${formatBRL(remaining)}`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function AccountSelect({
+  accounts,
+  value,
+  onChange,
+}: {
+  accounts: FinancialAccount[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="space-y-1">
+      <Label>Conta financeira</Label>
+      <select
+        className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        <option value="">Selecione a conta</option>
+        {accounts.map((account) => (
+          <option key={account.id} value={account.id}>
+            {account.name}
+          </option>
+        ))}
+      </select>
+    </div>
   );
 }
 
