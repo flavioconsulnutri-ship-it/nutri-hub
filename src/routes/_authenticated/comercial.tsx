@@ -62,10 +62,13 @@ const formatDateTime = (value: string) =>
     dateStyle: "short",
     timeStyle: "short",
   }).format(new Date(value));
-const formatMonth = (value: string) =>
-  new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric" }).format(
-    new Date(`${value}-01T12:00:00`),
-  );
+const formatMonth = (value: string) => {
+  const formatted = new Intl.DateTimeFormat("pt-BR", {
+    month: "long",
+    year: "numeric",
+  }).format(new Date(`${value}-01T12:00:00`));
+  return formatted.charAt(0).toLocaleUpperCase("pt-BR") + formatted.slice(1);
+};
 const formatDurationDays = (value: number | null) => {
   if (value === null) return "Sem dados ainda";
   if (value < 1) return "Menos de 1 dia";
@@ -1012,7 +1015,7 @@ function CommercialPage() {
               </div>
             </div>
             <div className="mt-4 border-t border-border pt-3 text-sm">
-              <span className="font-semibold capitalize">{dashboardPeriod.label}</span>
+              <span className="font-semibold">{dashboardPeriod.label}</span>
               {dashboardPeriod.comparisonLabel ? (
                 <span className="text-muted-foreground">
                   {" "}
@@ -1028,9 +1031,7 @@ function CommercialPage() {
             <section className="panel p-5">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
                 <div>
-                  <h3 className="font-semibold capitalize">
-                    Meta comercial · {formatMonth(goalMonth)}
-                  </h3>
+                  <h3 className="font-semibold">Meta comercial · {formatMonth(goalMonth)}</h3>
                   <p className="mt-1 text-xs text-muted-foreground">
                     Acompanhe somente faturamento vendido e quantidade de vendas
                   </p>
