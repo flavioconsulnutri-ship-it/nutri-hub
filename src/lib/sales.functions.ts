@@ -135,6 +135,8 @@ export const registerWonSale = createServerFn({ method: "POST" })
     if (Number(input.downPayment) < 0) throw new Error("A entrada não pode ser negativa.");
     if (Number(input.installments) < 1) throw new Error("Informe ao menos uma parcela.");
     if (!input.settlementDate) throw new Error("Informe a data prevista do repasse.");
+    if (input.paymentMethod === "pix" && !input.accountId)
+      throw new Error("Selecione a conta que recebeu o Pix.");
     if (Number(input.cardFeePercent) < 0 || Number(input.anticipationFeePercent) < 0)
       throw new Error("As taxas não podem ser negativas.");
     return input;
@@ -293,28 +295,53 @@ export const registerWonSale = createServerFn({ method: "POST" })
       mode: data.settlementMode,
       settlementDate: data.settlementDate,
     });
+    const isImmediatePix = data.paymentMethod === "pix";
 
-    const { error: recvError } = await supabase.from("receivables").insert(
-      settlementRows.map((row) => ({
-        org_id: orgId,
-        patient_id: patientId,
-        sale_id: sale.id,
-        contract_id: contract.id,
-        account_id: data.accountId ?? null,
-        description:
-          data.settlementMode === "integral"
-            ? `${plan.name} — repasse integral líquido`
-            : `${plan.name} — repasse ${row.installment_number}/${row.installment_total}`,
-        installment_number: row.installment_number,
-        installment_total: row.installment_total,
-        due_date: row.due_date,
-        expected_amount: row.expected_amount,
-        status: "pendente" as never,
-        payment_method: data.paymentMethod as never,
-        notes: `Venda em ${installments}x para o cliente. Taxas descontadas do repasse: ${fromCents(processingFeeCents).toFixed(2)}.`,
-      })),
-    );
+    const { data: createdReceivables, error: recvError } = await supabase
+      .from("receivables")
+      .insert(
+        settlementRows.map((row) => ({
+          org_id: orgId,
+          patient_id: patientId,
+          sale_id: sale.id,
+          contract_id: contract.id,
+          account_id: data.accountId ?? null,
+          description: isImmediatePix
+            ? `${plan.name} — recebimento Pix`
+            : data.settlementMode === "integral"
+              ? `${plan.name} — repasse integral líquido`
+              : `${plan.name} — repasse ${row.installment_number}/${row.installment_total}`,
+          installment_number: row.installment_number,
+          installment_total: row.installment_total,
+          due_date: row.due_date,
+          expected_amount: row.expected_amount,
+          received_amount: isImmediatePix ? row.expected_amount : 0,
+          status: (isImmediatePix ? "recebido" : "pendente") as never,
+          payment_method: data.paymentMethod as never,
+          notes: `Venda em ${installments}x para o cliente. Taxas descontadas do repasse: ${fromCents(processingFeeCents).toFixed(2)}.`,
+        })),
+      )
+      .select("id, description, due_date, expected_amount");
     if (recvError) throw new Error(`Parcelas não geradas: ${recvError.message}`);
+
+    if (isImmediatePix && data.accountId && createdReceivables?.length) {
+      const { error: cashError } = await supabase.from("cash_transactions").insert(
+        createdReceivables.map((receivable) => ({
+          org_id: orgId,
+          account_id: data.accountId!,
+          receivable_id: receivable.id,
+          patient_id: patientId,
+          direction: "entrada",
+          settled_at: data.settlementDate,
+          amount: receivable.expected_amount,
+          description: receivable.description,
+          payment_method: "pix" as never,
+          created_by: userId,
+        })),
+      );
+      if (cashError)
+        throw new Error(`Venda registrada, mas a entrada do Pix falhou: ${cashError.message}`);
+    }
 
     const recognition = buildRecognition({
       listAmountCents: listCents,

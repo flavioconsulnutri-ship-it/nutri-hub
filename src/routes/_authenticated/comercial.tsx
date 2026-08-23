@@ -1921,6 +1921,7 @@ function CloseSaleDialog({
     down_payment: "0",
     settlement_mode: "integral" as "integral" | "parcelado",
     settlement_date: todayISO(),
+    account_id: "",
     card_fee_percent: "0",
     anticipation_fee_percent: "0",
     is_renewal: false,
@@ -1930,6 +1931,25 @@ function CloseSaleDialog({
   useEffect(() => {
     if (!form.plan_id && plans[0]) setForm((current) => ({ ...current, plan_id: plans[0]!.id }));
   }, [form.plan_id, plans]);
+
+  const financialAccounts = useQuery({
+    queryKey: ["active-financial-accounts"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("financial_accounts")
+        .select("id, name")
+        .eq("active", true)
+        .order("name");
+      if (error) throw new Error(error.message);
+      return data ?? [];
+    },
+  });
+
+  useEffect(() => {
+    if (!form.account_id && financialAccounts.data?.[0]) {
+      setForm((current) => ({ ...current, account_id: financialAccounts.data![0]!.id }));
+    }
+  }, [financialAccounts.data, form.account_id]);
 
   const selectedPlan = plans.find((plan) => plan.id === form.plan_id);
   const grossAmount = selectedPlan ? Number(selectedPlan.card_total) : 0;
@@ -2005,6 +2025,7 @@ function CloseSaleDialog({
           downPayment: Number(form.down_payment || 0),
           settlementMode: form.settlement_mode,
           settlementDate: form.settlement_date,
+          accountId: form.account_id || null,
           cardFeePercent: Number(form.card_fee_percent || 0),
           anticipationFeePercent: Number(form.anticipation_fee_percent || 0),
           isRenewal: form.is_renewal,
@@ -2024,6 +2045,7 @@ function CloseSaleDialog({
         queryClient.invalidateQueries({ queryKey: ["commercial-sales"] }),
         queryClient.invalidateQueries({ queryKey: ["contracts"] }),
         queryClient.invalidateQueries({ queryKey: ["receivables"] }),
+        queryClient.invalidateQueries({ queryKey: ["financial-overview"] }),
       ]);
       onDone();
     },
@@ -2037,6 +2059,8 @@ function CloseSaleDialog({
     if (Number(form.discount) < 0) return setFormError("O desconto não pode ser negativo.");
     if (Number(form.installments) < 1) return setFormError("Informe ao menos uma parcela.");
     if (!form.settlement_date) return setFormError("Informe a data prevista do repasse.");
+    if (form.payment_method === "pix" && !form.account_id)
+      return setFormError("Selecione a conta que recebeu o Pix.");
     if (Number(form.card_fee_percent) < 0 || Number(form.anticipation_fee_percent) < 0)
       return setFormError("As taxas não podem ser negativas.");
     if (Number(form.down_payment) < 0)
@@ -2239,6 +2263,35 @@ function CloseSaleDialog({
             />
           </Field>
         )}
+        {form.payment_method === "pix" ? (
+          <Field label="Conta que recebeu o Pix">
+            <Select
+              value={form.account_id}
+              onValueChange={(value) => setForm({ ...form, account_id: value })}
+              disabled={financialAccounts.isLoading || financialAccounts.data?.length === 0}
+            >
+              <SelectTrigger>
+                <SelectValue
+                  placeholder={
+                    financialAccounts.isLoading
+                      ? "Carregando contas..."
+                      : "Selecione a conta financeira"
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {(financialAccounts.data ?? []).map((account) => (
+                  <SelectItem key={account.id} value={account.id}>
+                    {account.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="mt-1 text-xs text-muted-foreground">
+              O recebimento será lançado automaticamente no caixa ao concluir a venda.
+            </p>
+          </Field>
+        ) : null}
         <div className="grid gap-3 sm:col-span-2 sm:grid-cols-2 lg:grid-cols-4">
           <div className="rounded-lg border bg-muted/40 p-3">
             <p className="text-xs text-muted-foreground">Valor bruto do plano</p>
@@ -2302,7 +2355,9 @@ function CloseSaleDialog({
                   Taxas da operadora: {formatBRL(financialPreview.data.processingFee)}
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  O dinheiro só entra no caixa após a baixa do recebimento no módulo Financeiro.
+                  {form.payment_method === "pix"
+                    ? "O Pix será lançado automaticamente no caixa ao concluir a venda."
+                    : "O dinheiro só entra no caixa após a baixa do recebimento no módulo Financeiro."}
                 </p>
               </div>
             </div>
@@ -2310,7 +2365,9 @@ function CloseSaleDialog({
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm font-semibold">Previsão dos repasses ao consultório</p>
                 <p className="text-xs text-muted-foreground">
-                  Conta financeira será definida na baixa
+                  {form.payment_method === "pix"
+                    ? `Conta: ${financialAccounts.data?.find((account) => account.id === form.account_id)?.name ?? "não selecionada"}`
+                    : "Conta financeira será definida na baixa"}
                 </p>
               </div>
               <div className="mt-3 grid gap-2 sm:grid-cols-2">
