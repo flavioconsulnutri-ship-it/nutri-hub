@@ -203,6 +203,7 @@ export const Route = createFileRoute("/_authenticated/comercial")({
 
 function CommercialPage() {
   const [open, setOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState("dashboard");
   const [editingLead, setEditingLead] = useState<LeadRow | null>(null);
   const [selectedOpportunityId, setSelectedOpportunityId] = useState<string | null>(null);
   const [closingOpportunityId, setClosingOpportunityId] = useState<string | null>(null);
@@ -701,6 +702,17 @@ function CommercialPage() {
     );
     const result = (leads.data ?? []).filter((lead) => {
       const opportunity = opportunityByLead.get(lead.id);
+      const latestStageChange = (dashboardStageHistory.data ?? []).find(
+        (history) => history.opportunity_id === opportunity?.id,
+      )?.changed_at;
+      const staleLimit = new Date();
+      staleLimit.setDate(staleLimit.getDate() - 7);
+      const isStale = Boolean(
+        opportunity &&
+        activeStages.includes(opportunity.stage) &&
+        opportunity.stage !== "reativacao_futura" &&
+        new Date(latestStageChange ?? opportunity.created_at) < staleLimit,
+      );
       const matchesSearch =
         !normalizedSearch ||
         [lead.full_name, lead.phone, lead.email, lead.main_goal]
@@ -712,7 +724,8 @@ function CommercialPage() {
         (leadSourceFilter === "todos" ||
           (lead.source || "Não identificado") === leadSourceFilter) &&
         (leadTemperatureFilter === "todos" || lead.temperature === leadTemperatureFilter) &&
-        (leadStageFilter === "todos" || opportunity?.stage === leadStageFilter)
+        (leadStageFilter === "todos" ||
+          (leadStageFilter === "stale" ? isStale : opportunity?.stage === leadStageFilter))
       );
     });
 
@@ -729,6 +742,7 @@ function CommercialPage() {
     leadStageFilter,
     leadTemperatureFilter,
     leadTypeFilter,
+    dashboardStageHistory.data,
     leads.data,
     opportunities.data,
   ]);
@@ -764,7 +778,7 @@ function CommercialPage() {
           </Dialog>
         }
       />
-      <Tabs defaultValue="dashboard" className="mt-6">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="mt-6">
         <TabsList>
           <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
           <TabsTrigger value="funil">Funil</TabsTrigger>
@@ -924,19 +938,35 @@ function CommercialPage() {
               label="Ações atrasadas"
               value={String(dashboard.overdue)}
               alert={dashboard.overdue > 0}
+              onClick={() => setActiveTab("tarefas")}
             />
             <Metric
               label="Leads parados há 7+ dias"
               value={String(dashboard.stale)}
               alert={dashboard.stale > 0}
+              onClick={() => {
+                clearLeadFilters();
+                setLeadStageFilter("stale");
+                setActiveTab("leads");
+              }}
             />
             <Metric
               label="Conversão dos leads do período"
               value={`${(dashboard.conversion * 100).toFixed(1).replace(".", ",")}%`}
+              onClick={() => {
+                clearLeadFilters();
+                setLeadStageFilter("ganha");
+                setActiveTab("leads");
+              }}
             />
             <Metric
               label={`Faturamento vendido · ${dashboard.sales} ${dashboard.sales === 1 ? "venda" : "vendas"}`}
               value={formatBRL(dashboard.revenue)}
+              onClick={() => {
+                clearLeadFilters();
+                setLeadStageFilter("ganha");
+                setActiveTab("leads");
+              }}
             />
           </div>
 
@@ -1366,6 +1396,7 @@ function CommercialPage() {
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="todos">Todas</SelectItem>
+                        <SelectItem value="stale">Parados há 7+ dias</SelectItem>
                         {stages.map((stage) => (
                           <SelectItem key={stage.value} value={stage.value}>
                             {stage.label}
@@ -2985,19 +3016,26 @@ function Metric({
   label,
   value,
   alert = false,
+  onClick,
 }: {
   label: string;
   value: string;
   alert?: boolean;
+  onClick: () => void;
 }) {
   return (
-    <div className={`panel p-4 ${alert ? "border-warning/50" : ""}`}>
+    <button
+      type="button"
+      className={`panel p-4 text-left transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md ${alert ? "border-warning/50" : ""}`}
+      onClick={onClick}
+    >
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         {alert ? <Clock3 className="size-4 text-warning" /> : null}
         {label}
       </div>
       <p className="mt-2 text-metric text-2xl font-semibold">{value}</p>
-    </div>
+      <p className="mt-2 text-[11px] font-medium text-primary">Ver registros</p>
+    </button>
   );
 }
 
