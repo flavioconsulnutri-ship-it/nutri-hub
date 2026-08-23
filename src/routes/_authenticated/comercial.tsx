@@ -196,6 +196,71 @@ const activeStages = stages
   .filter((s) => !["ganha", "perdida", "follow_up_infinito"].includes(s.value))
   .map((s) => s.value);
 
+type DashboardPeriodMode = "month" | "year" | "all";
+
+const isoDate = (date: Date) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+
+const dashboardPeriodRange = (mode: DashboardPeriodMode, month: string, year: string) => {
+  const today = new Date(`${todayISO()}T12:00:00`);
+
+  if (mode === "all") {
+    return {
+      from: "1900-01-01",
+      to: todayISO(),
+      label: "Todo o período",
+      previousFrom: null,
+      previousTo: null,
+      comparisonLabel: null,
+    };
+  }
+
+  if (mode === "year") {
+    const selectedYear = Number(year);
+    const isCurrentYear = selectedYear === today.getFullYear();
+    const end = isCurrentYear ? today : new Date(selectedYear, 11, 31, 12);
+    const previousYearDay = Math.min(
+      today.getDate(),
+      new Date(selectedYear - 1, today.getMonth() + 1, 0, 12).getDate(),
+    );
+    const previousEnd = isCurrentYear
+      ? new Date(selectedYear - 1, today.getMonth(), previousYearDay, 12)
+      : new Date(selectedYear - 1, 11, 31, 12);
+    return {
+      from: `${selectedYear}-01-01`,
+      to: isoDate(end),
+      label: isCurrentYear ? `${selectedYear} até hoje` : String(selectedYear),
+      previousFrom: `${selectedYear - 1}-01-01`,
+      previousTo: isoDate(previousEnd),
+      comparisonLabel: String(selectedYear - 1),
+    };
+  }
+
+  const [selectedYear, selectedMonth] = month.split("-").map(Number);
+  const isCurrentMonth =
+    selectedYear === today.getFullYear() && selectedMonth === today.getMonth() + 1;
+  const end = isCurrentMonth ? today : new Date(selectedYear, selectedMonth, 0, 12);
+  const previousStart = new Date(selectedYear, selectedMonth - 2, 1, 12);
+  const previousMonthLastDay = new Date(selectedYear, selectedMonth - 1, 0, 12).getDate();
+  const previousEnd = isCurrentMonth
+    ? new Date(
+        previousStart.getFullYear(),
+        previousStart.getMonth(),
+        Math.min(today.getDate(), previousMonthLastDay),
+        12,
+      )
+    : new Date(selectedYear, selectedMonth - 1, 0, 12);
+
+  return {
+    from: `${month}-01`,
+    to: isoDate(end),
+    label: formatMonth(month),
+    previousFrom: isoDate(previousStart),
+    previousTo: isoDate(previousEnd),
+    comparisonLabel: formatMonth(isoDate(previousStart).slice(0, 7)),
+  };
+};
+
 export const Route = createFileRoute("/_authenticated/comercial")({
   head: () => ({ meta: [{ title: "CRM comercial — Nutri Hub" }] }),
   component: CommercialPage,
@@ -209,12 +274,9 @@ function CommercialPage() {
   const [closingOpportunityId, setClosingOpportunityId] = useState<string | null>(null);
   const [dragOverStage, setDragOverStage] = useState<FunnelStage | null>(null);
   const didDrag = useRef(false);
-  const [dashboardFrom, setDashboardFrom] = useState(() => {
-    const date = new Date();
-    date.setMonth(date.getMonth() - 5, 1);
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-01`;
-  });
-  const [dashboardTo, setDashboardTo] = useState(todayISO());
+  const [dashboardPeriodMode, setDashboardPeriodMode] = useState<DashboardPeriodMode>("month");
+  const [dashboardMonth, setDashboardMonth] = useState(todayISO().slice(0, 7));
+  const [dashboardYear, setDashboardYear] = useState(todayISO().slice(0, 4));
   const [sourceFilter, setSourceFilter] = useState("todos");
   const [ownerFilter, setOwnerFilter] = useState("todos");
   const [goalMonth, setGoalMonth] = useState(todayISO().slice(0, 7));
@@ -228,6 +290,10 @@ function CommercialPage() {
   const [leadStageFilter, setLeadStageFilter] = useState("todos");
   const [leadSort, setLeadSort] = useState("recentes");
   const queryClient = useQueryClient();
+  const dashboardPeriod = useMemo(
+    () => dashboardPeriodRange(dashboardPeriodMode, dashboardMonth, dashboardYear),
+    [dashboardMonth, dashboardPeriodMode, dashboardYear],
+  );
   const opportunities = useQuery({
     queryKey: ["opportunities"],
     queryFn: async () => {
@@ -454,9 +520,12 @@ function CommercialPage() {
       (ownerFilter === "todos" || lead.owner_id === ownerFilter);
     const dimensionLeads = (leads.data ?? []).filter(matchesDimensions);
     const dimensionLeadIds = new Set(dimensionLeads.map((lead) => lead.id));
+    const dimensionOpportunities = (opportunities.data ?? []).filter(
+      (opportunity) => opportunity.lead_id && dimensionLeadIds.has(opportunity.lead_id),
+    );
     const filteredLeads = dimensionLeads.filter((lead) => {
       const day = lead.created_at.slice(0, 10);
-      return day >= dashboardFrom && day <= dashboardTo;
+      return day >= dashboardPeriod.from && day <= dashboardPeriod.to;
     });
     const leadIds = new Set(filteredLeads.map((lead) => lead.id));
     const filteredOpportunities = (opportunities.data ?? []).filter(
@@ -470,7 +539,8 @@ function CommercialPage() {
       (opportunities.data ?? []).map((opportunity) => [opportunity.id, opportunity]),
     );
     const salesInPeriod = (commercialSales.data ?? []).filter((sale) => {
-      if (sale.sale_date < dashboardFrom || sale.sale_date > dashboardTo) return false;
+      if (sale.sale_date < dashboardPeriod.from || sale.sale_date > dashboardPeriod.to)
+        return false;
       if (sourceFilter === "todos" && ownerFilter === "todos") return true;
       const opportunity = sale.opportunity_id ? opportunityById.get(sale.opportunity_id) : null;
       return Boolean(opportunity?.lead_id && dimensionLeadIds.has(opportunity.lead_id));
@@ -500,9 +570,13 @@ function CommercialPage() {
       .filter((item) => item.value > 0);
     const overdueTasks = (tasks.data ?? []).filter((task) => {
       const opportunity = task.opportunities as { lead_id?: string | null } | null;
-      return task.due_date < todayISO() && opportunity?.lead_id && leadIds.has(opportunity.lead_id);
+      return (
+        task.due_date < todayISO() &&
+        opportunity?.lead_id &&
+        dimensionLeadIds.has(opportunity.lead_id)
+      );
     });
-    const overdueDefinedActions = filteredOpportunities.filter(
+    const overdueDefinedActions = dimensionOpportunities.filter(
       (opportunity) =>
         activeStages.includes(opportunity.stage) &&
         opportunity.next_action_date &&
@@ -516,7 +590,7 @@ function CommercialPage() {
     }
     const staleLimit = new Date();
     staleLimit.setDate(staleLimit.getDate() - 7);
-    const stale = filteredOpportunities.filter((opportunity) => {
+    const stale = dimensionOpportunities.filter((opportunity) => {
       if (!activeStages.includes(opportunity.stage) || opportunity.stage === "reativacao_futura") {
         return false;
       }
@@ -525,7 +599,7 @@ function CommercialPage() {
     });
     const agingByStage = new Map<FunnelStage, { totalDays: number; count: number }>();
     const now = Date.now();
-    for (const opportunity of filteredOpportunities) {
+    for (const opportunity of dimensionOpportunities) {
       if (!activeStages.includes(opportunity.stage)) continue;
       const lastChange = latestStageChange.get(opportunity.id) ?? opportunity.created_at;
       const days = Math.max(0, (now - new Date(lastChange).getTime()) / 86_400_000);
@@ -556,8 +630,8 @@ function CommercialPage() {
           if (!closedDay) return false;
           return (
             opportunity.stage === "perdida" &&
-            closedDay >= dashboardFrom &&
-            closedDay <= dashboardTo &&
+            closedDay >= dashboardPeriod.from &&
+            closedDay <= dashboardPeriod.to &&
             Boolean(opportunity.lead_id && dimensionLeadIds.has(opportunity.lead_id))
           );
         })
@@ -569,6 +643,7 @@ function CommercialPage() {
       ([label, value]) => ({ label, value }),
     ).sort((a, b) => b.value - a.value);
     return {
+      leads: filteredLeads.length,
       sales: salesInPeriod.length,
       conversion: filteredLeads.length ? convertedLeadIds.size / filteredLeads.length : 0,
       revenue,
@@ -586,14 +661,66 @@ function CommercialPage() {
     };
   }, [
     dashboardStageHistory.data,
-    dashboardFrom,
-    dashboardTo,
+    dashboardPeriod.from,
+    dashboardPeriod.to,
     commercialSales.data,
     leads.data,
     opportunities.data,
     ownerFilter,
     sourceFilter,
     tasks.data,
+  ]);
+  const previousDashboard = useMemo(() => {
+    if (!dashboardPeriod.previousFrom || !dashboardPeriod.previousTo) return null;
+
+    const matchesDimensions = (lead: LeadRow) =>
+      (sourceFilter === "todos" || (lead.source ?? "Não identificado") === sourceFilter) &&
+      (ownerFilter === "todos" || lead.owner_id === ownerFilter);
+    const dimensionLeads = (leads.data ?? []).filter(matchesDimensions);
+    const dimensionLeadIds = new Set(dimensionLeads.map((lead) => lead.id));
+    const filteredLeads = dimensionLeads.filter((lead) => {
+      const day = lead.created_at.slice(0, 10);
+      return day >= dashboardPeriod.previousFrom! && day <= dashboardPeriod.previousTo!;
+    });
+    const leadIds = new Set(filteredLeads.map((lead) => lead.id));
+    const filteredOpportunities = (opportunities.data ?? []).filter(
+      (opportunity) => opportunity.lead_id && leadIds.has(opportunity.lead_id),
+    );
+    const convertedLeadIds = new Set(
+      filteredOpportunities
+        .filter((opportunity) => opportunity.stage === "ganha")
+        .map((opportunity) => opportunity.lead_id)
+        .filter(Boolean),
+    );
+    const opportunityById = new Map(
+      (opportunities.data ?? []).map((opportunity) => [opportunity.id, opportunity]),
+    );
+    const sales = (commercialSales.data ?? []).filter((sale) => {
+      if (
+        sale.sale_date < dashboardPeriod.previousFrom! ||
+        sale.sale_date > dashboardPeriod.previousTo!
+      ) {
+        return false;
+      }
+      if (sourceFilter === "todos" && ownerFilter === "todos") return true;
+      const opportunity = sale.opportunity_id ? opportunityById.get(sale.opportunity_id) : null;
+      return Boolean(opportunity?.lead_id && dimensionLeadIds.has(opportunity.lead_id));
+    });
+
+    return {
+      leads: filteredLeads.length,
+      sales: sales.length,
+      conversion: filteredLeads.length ? convertedLeadIds.size / filteredLeads.length : 0,
+      revenue: sales.reduce((sum, sale) => sum + Number(sale.net_amount), 0),
+    };
+  }, [
+    commercialSales.data,
+    dashboardPeriod.previousFrom,
+    dashboardPeriod.previousTo,
+    leads.data,
+    opportunities.data,
+    ownerFilter,
+    sourceFilter,
   ]);
   const goalProgress = useMemo(() => {
     const sales = (commercialSales.data ?? []).filter((sale) =>
@@ -620,6 +747,12 @@ function CommercialPage() {
       ).sort(),
     [leads.data],
   );
+  const dashboardYearOptions = useMemo(() => {
+    const years = new Set<string>([todayISO().slice(0, 4)]);
+    for (const lead of leads.data ?? []) years.add(lead.created_at.slice(0, 4));
+    for (const sale of commercialSales.data ?? []) years.add(sale.sale_date.slice(0, 4));
+    return Array.from(years).sort((a, b) => b.localeCompare(a));
+  }, [commercialSales.data, leads.data]);
   const nextActions = useMemo(
     () =>
       (opportunities.data ?? [])
@@ -786,173 +919,254 @@ function CommercialPage() {
           <TabsTrigger value="leads">Base de leads</TabsTrigger>
         </TabsList>
         <TabsContent value="dashboard" className="mt-4 space-y-5">
-          <div className="panel grid gap-4 p-4 md:grid-cols-2 xl:grid-cols-4">
-            <Field label="De">
-              <Input
-                type="date"
-                value={dashboardFrom}
-                max={dashboardTo}
-                onChange={(event) => setDashboardFrom(event.target.value)}
-              />
-            </Field>
-            <Field label="Até">
-              <Input
-                type="date"
-                value={dashboardTo}
-                min={dashboardFrom}
-                onChange={(event) => setDashboardTo(event.target.value)}
-              />
-            </Field>
-            <Field label="Origem">
-              <Select value={sourceFilter} onValueChange={setSourceFilter}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="todos">Todas</SelectItem>
-                  {sourceOptions.map((source) => (
-                    <SelectItem key={source} value={source}>
-                      {source}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field label="Responsável">
-              <Select value={ownerFilter} onValueChange={setOwnerFilter}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="todos">Todos</SelectItem>
-                  {(responsibles.data ?? []).map((profile) => (
-                    <SelectItem key={profile.id} value={profile.id}>
-                      {profile.full_name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-          </div>
-
-          <section className="panel p-5">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <section className="panel p-4">
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
               <div>
-                <h3 className="font-semibold">Meta comercial mensal</h3>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Acompanhe somente faturamento vendido e quantidade de vendas
-                </p>
+                <p className="text-xs font-medium text-muted-foreground">Visualizar por</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(
+                    [
+                      ["month", "Mês"],
+                      ["year", "Ano"],
+                      ["all", "Todo o período"],
+                    ] as const
+                  ).map(([value, label]) => (
+                    <Button
+                      key={value}
+                      type="button"
+                      size="sm"
+                      variant={dashboardPeriodMode === value ? "default" : "outline"}
+                      onClick={() => setDashboardPeriodMode(value)}
+                    >
+                      {label}
+                    </Button>
+                  ))}
+                </div>
               </div>
-              <div className="flex items-end gap-2">
-                <Field label="Mês">
-                  <Input
-                    type="month"
-                    className="w-44"
-                    value={goalMonth}
-                    onChange={(event) => {
-                      if (event.target.value) setGoalMonth(event.target.value);
-                    }}
-                  />
+
+              <div className="grid flex-1 gap-4 sm:grid-cols-2 xl:max-w-3xl xl:grid-cols-3">
+                {dashboardPeriodMode === "month" ? (
+                  <Field label="Mês selecionado">
+                    <Input
+                      type="month"
+                      value={dashboardMonth}
+                      max={todayISO().slice(0, 7)}
+                      onChange={(event) => {
+                        if (!event.target.value) return;
+                        setDashboardMonth(event.target.value);
+                        setGoalMonth(event.target.value);
+                      }}
+                    />
+                  </Field>
+                ) : dashboardPeriodMode === "year" ? (
+                  <Field label="Ano selecionado">
+                    <Select value={dashboardYear} onValueChange={setDashboardYear}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {dashboardYearOptions.map((year) => (
+                          <SelectItem key={year} value={year}>
+                            {year}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                ) : (
+                  <div className="rounded-lg bg-muted/50 px-3 py-2 text-sm">
+                    <p className="text-xs text-muted-foreground">Período selecionado</p>
+                    <p className="mt-1 font-medium">Desde o primeiro registro</p>
+                  </div>
+                )}
+                <Field label="Origem">
+                  <Select value={sourceFilter} onValueChange={setSourceFilter}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="todos">Todas</SelectItem>
+                      {sourceOptions.map((source) => (
+                        <SelectItem key={source} value={source}>
+                          {source}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </Field>
-                <Button variant="outline" onClick={() => setGoalOpen(true)}>
-                  {selectedGoal ? "Ajustar meta" : "Definir meta"}
-                </Button>
+                <Field label="Responsável">
+                  <Select value={ownerFilter} onValueChange={setOwnerFilter}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="todos">Todos</SelectItem>
+                      {(responsibles.data ?? []).map((profile) => (
+                        <SelectItem key={profile.id} value={profile.id}>
+                          {profile.full_name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
               </div>
             </div>
-            {commercialGoals.isLoading ? (
-              <Skeleton className="mt-5 h-24 w-full" />
-            ) : commercialGoals.isError ? (
-              <p className="mt-5 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
-                Não foi possível carregar as metas comerciais.
-              </p>
-            ) : selectedGoal ? (
-              <div className="mt-5 grid gap-5 md:grid-cols-2">
-                <GoalProgress
-                  label="Faturamento vendido"
-                  current={formatBRL(goalProgress.revenue)}
-                  target={formatBRL(goalProgress.revenueTarget)}
-                  percent={goalProgress.revenuePercent}
-                  remaining={`Faltam ${formatBRL(goalProgress.remainingRevenue)}`}
-                />
-                <GoalProgress
-                  label="Vendas concluídas"
-                  current={String(goalProgress.sales)}
-                  target={String(goalProgress.salesTarget)}
-                  percent={goalProgress.salesPercent}
-                  remaining={`Faltam ${goalProgress.remainingSales} ${goalProgress.remainingSales === 1 ? "venda" : "vendas"}`}
-                />
-              </div>
-            ) : (
-              <p className="mt-5 rounded-md bg-muted/50 p-4 text-sm text-muted-foreground">
-                Nenhuma meta definida para {formatMonth(goalMonth)}.
-              </p>
-            )}
-            <Dialog open={goalOpen} onOpenChange={setGoalOpen}>
-              <DialogContent className="sm:max-w-md">
-                <DialogHeader>
-                  <DialogTitle>Meta de {formatMonth(goalMonth)}</DialogTitle>
-                </DialogHeader>
-                <div className="grid gap-4">
-                  <Field label="Meta de faturamento vendido (R$)">
-                    <Input
-                      type="number"
-                      min="0.01"
-                      step="0.01"
-                      value={goalForm.revenue}
-                      onChange={(event) =>
-                        setGoalForm((current) => ({ ...current, revenue: event.target.value }))
-                      }
-                    />
-                  </Field>
-                  <Field label="Meta de vendas concluídas">
-                    <Input
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={goalForm.sales}
-                      onChange={(event) =>
-                        setGoalForm((current) => ({ ...current, sales: event.target.value }))
-                      }
-                    />
-                  </Field>
-                  {goalError ? (
-                    <p className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
-                      {goalError}
-                    </p>
-                  ) : null}
-                </div>
-                <DialogFooter>
-                  <Button variant="outline" onClick={() => setGoalOpen(false)}>
-                    Cancelar
-                  </Button>
-                  <Button disabled={saveGoal.isPending} onClick={() => saveGoal.mutate()}>
-                    {saveGoal.isPending ? "Salvando..." : "Salvar meta"}
-                  </Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
+            <div className="mt-4 border-t border-border pt-3 text-sm">
+              <span className="font-semibold capitalize">{dashboardPeriod.label}</span>
+              {dashboardPeriod.comparisonLabel ? (
+                <span className="text-muted-foreground">
+                  {" "}
+                  · comparação automática com {dashboardPeriod.comparisonLabel}
+                </span>
+              ) : (
+                <span className="text-muted-foreground"> · visão acumulada</span>
+              )}
+            </div>
           </section>
+
+          {dashboardPeriodMode === "month" ? (
+            <section className="panel p-5">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <h3 className="font-semibold capitalize">
+                    Meta comercial · {formatMonth(goalMonth)}
+                  </h3>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Acompanhe somente faturamento vendido e quantidade de vendas
+                  </p>
+                </div>
+                <div className="flex items-end gap-2">
+                  <Button variant="outline" onClick={() => setGoalOpen(true)}>
+                    {selectedGoal ? "Ajustar meta" : "Definir meta"}
+                  </Button>
+                </div>
+              </div>
+              {commercialGoals.isLoading ? (
+                <Skeleton className="mt-5 h-24 w-full" />
+              ) : commercialGoals.isError ? (
+                <p className="mt-5 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+                  Não foi possível carregar as metas comerciais.
+                </p>
+              ) : selectedGoal ? (
+                <div className="mt-5 grid gap-5 md:grid-cols-2">
+                  <GoalProgress
+                    label="Faturamento vendido"
+                    current={formatBRL(goalProgress.revenue)}
+                    target={formatBRL(goalProgress.revenueTarget)}
+                    percent={goalProgress.revenuePercent}
+                    remaining={`Faltam ${formatBRL(goalProgress.remainingRevenue)}`}
+                  />
+                  <GoalProgress
+                    label="Vendas concluídas"
+                    current={String(goalProgress.sales)}
+                    target={String(goalProgress.salesTarget)}
+                    percent={goalProgress.salesPercent}
+                    remaining={`Faltam ${goalProgress.remainingSales} ${goalProgress.remainingSales === 1 ? "venda" : "vendas"}`}
+                  />
+                </div>
+              ) : (
+                <p className="mt-5 rounded-md bg-muted/50 p-4 text-sm text-muted-foreground">
+                  Nenhuma meta definida para {formatMonth(goalMonth)}.
+                </p>
+              )}
+              <Dialog open={goalOpen} onOpenChange={setGoalOpen}>
+                <DialogContent className="sm:max-w-md">
+                  <DialogHeader>
+                    <DialogTitle>Meta de {formatMonth(goalMonth)}</DialogTitle>
+                  </DialogHeader>
+                  <div className="grid gap-4">
+                    <Field label="Meta de faturamento vendido (R$)">
+                      <Input
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        value={goalForm.revenue}
+                        onChange={(event) =>
+                          setGoalForm((current) => ({ ...current, revenue: event.target.value }))
+                        }
+                      />
+                    </Field>
+                    <Field label="Meta de vendas concluídas">
+                      <Input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={goalForm.sales}
+                        onChange={(event) =>
+                          setGoalForm((current) => ({ ...current, sales: event.target.value }))
+                        }
+                      />
+                    </Field>
+                    {goalError ? (
+                      <p className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+                        {goalError}
+                      </p>
+                    ) : null}
+                  </div>
+                  <DialogFooter>
+                    <Button variant="outline" onClick={() => setGoalOpen(false)}>
+                      Cancelar
+                    </Button>
+                    <Button disabled={saveGoal.isPending} onClick={() => saveGoal.mutate()}>
+                      {saveGoal.isPending ? "Salvando..." : "Salvar meta"}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+            </section>
+          ) : null}
 
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <Metric
-              label="Ações atrasadas"
-              value={String(dashboard.overdue)}
-              alert={dashboard.overdue > 0}
-              onClick={() => setActiveTab("tarefas")}
-            />
-            <Metric
-              label="Leads parados há 7+ dias"
-              value={String(dashboard.stale)}
-              alert={dashboard.stale > 0}
+              label="Leads recebidos"
+              value={String(dashboard.leads)}
+              comparison={
+                previousDashboard && dashboardPeriod.comparisonLabel
+                  ? {
+                      current: dashboard.leads,
+                      previous: previousDashboard.leads,
+                      mode: "percent",
+                      label: dashboardPeriod.comparisonLabel,
+                    }
+                  : undefined
+              }
               onClick={() => {
                 clearLeadFilters();
-                setLeadStageFilter("stale");
+                setActiveTab("leads");
+              }}
+            />
+            <Metric
+              label="Vendas concluídas"
+              value={String(dashboard.sales)}
+              comparison={
+                previousDashboard && dashboardPeriod.comparisonLabel
+                  ? {
+                      current: dashboard.sales,
+                      previous: previousDashboard.sales,
+                      mode: "percent",
+                      label: dashboardPeriod.comparisonLabel,
+                    }
+                  : undefined
+              }
+              onClick={() => {
+                clearLeadFilters();
+                setLeadStageFilter("ganha");
                 setActiveTab("leads");
               }}
             />
             <Metric
               label="Conversão dos leads do período"
               value={`${(dashboard.conversion * 100).toFixed(1).replace(".", ",")}%`}
+              comparison={
+                previousDashboard && dashboardPeriod.comparisonLabel
+                  ? {
+                      current: dashboard.conversion,
+                      previous: previousDashboard.conversion,
+                      mode: "points",
+                      label: dashboardPeriod.comparisonLabel,
+                    }
+                  : undefined
+              }
               onClick={() => {
                 clearLeadFilters();
                 setLeadStageFilter("ganha");
@@ -962,6 +1176,16 @@ function CommercialPage() {
             <Metric
               label={`Faturamento vendido · ${dashboard.sales} ${dashboard.sales === 1 ? "venda" : "vendas"}`}
               value={formatBRL(dashboard.revenue)}
+              comparison={
+                previousDashboard && dashboardPeriod.comparisonLabel
+                  ? {
+                      current: dashboard.revenue,
+                      previous: previousDashboard.revenue,
+                      mode: "percent",
+                      label: dashboardPeriod.comparisonLabel,
+                    }
+                  : undefined
+              }
               onClick={() => {
                 clearLeadFilters();
                 setLeadStageFilter("ganha");
@@ -969,6 +1193,33 @@ function CommercialPage() {
               }}
             />
           </div>
+
+          <section className="panel p-4">
+            <div className="mb-3">
+              <h3 className="text-sm font-semibold">Atenção agora</h3>
+              <p className="text-xs text-muted-foreground">
+                Pendências operacionais que precisam de ação, independentemente da comparação
+              </p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <Metric
+                label="Ações atrasadas"
+                value={String(dashboard.overdue)}
+                alert={dashboard.overdue > 0}
+                onClick={() => setActiveTab("tarefas")}
+              />
+              <Metric
+                label="Leads parados há 7+ dias"
+                value={String(dashboard.stale)}
+                alert={dashboard.stale > 0}
+                onClick={() => {
+                  clearLeadFilters();
+                  setLeadStageFilter("stale");
+                  setActiveTab("leads");
+                }}
+              />
+            </div>
+          </section>
 
           <section className="panel p-5">
             <div>
@@ -3016,13 +3267,39 @@ function Metric({
   label,
   value,
   alert = false,
+  comparison,
   onClick,
 }: {
   label: string;
   value: string;
   alert?: boolean;
+  comparison?: {
+    current: number;
+    previous: number;
+    mode: "percent" | "points";
+    label: string;
+  };
   onClick: () => void;
 }) {
+  const difference = comparison ? comparison.current - comparison.previous : 0;
+  const comparisonText = comparison
+    ? comparison.mode === "points"
+      ? `${difference > 0 ? "↑" : difference < 0 ? "↓" : "→"} ${Math.abs(difference * 100)
+          .toFixed(1)
+          .replace(".", ",")} p.p. vs. ${comparison.label}`
+      : comparison.previous === 0
+        ? comparison.current === 0
+          ? `→ Sem mudança vs. ${comparison.label}`
+          : `↑ Novo resultado vs. ${comparison.label}`
+        : `${difference > 0 ? "↑" : difference < 0 ? "↓" : "→"} ${Math.abs(
+            (difference / comparison.previous) * 100,
+          )
+            .toFixed(1)
+            .replace(".", ",")}% vs. ${comparison.label}`
+    : null;
+  const comparisonTone =
+    difference > 0 ? "text-emerald-700" : difference < 0 ? "text-red-700" : "text-muted-foreground";
+
   return (
     <button
       type="button"
@@ -3034,7 +3311,12 @@ function Metric({
         {label}
       </div>
       <p className="mt-2 text-metric text-2xl font-semibold">{value}</p>
-      <p className="mt-2 text-[11px] font-medium text-primary">Ver registros</p>
+      {comparisonText ? (
+        <p className={`mt-2 text-[11px] font-medium ${comparisonTone}`}>{comparisonText}</p>
+      ) : (
+        <p className="mt-2 text-[11px] text-muted-foreground">Acumulado no período</p>
+      )}
+      <p className="mt-1 text-[11px] font-medium text-primary">Ver registros</p>
     </button>
   );
 }
