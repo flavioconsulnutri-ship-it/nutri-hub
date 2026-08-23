@@ -66,6 +66,12 @@ const formatMonth = (value: string) =>
   new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric" }).format(
     new Date(`${value}-01T12:00:00`),
   );
+const formatDurationDays = (value: number | null) => {
+  if (value === null) return "Sem dados ainda";
+  if (value < 1) return "Menos de 1 dia";
+  const rounded = Math.round(value * 10) / 10;
+  return `${String(rounded).replace(".", ",")} ${rounded === 1 ? "dia" : "dias"}`;
+};
 const leadSources = alphabetical([
   "Instagram",
   "WhatsApp",
@@ -516,6 +522,32 @@ function CommercialPage() {
       const lastChange = latestStageChange.get(opportunity.id) ?? opportunity.created_at;
       return new Date(lastChange) < staleLimit;
     });
+    const agingByStage = new Map<FunnelStage, { totalDays: number; count: number }>();
+    const now = Date.now();
+    for (const opportunity of filteredOpportunities) {
+      if (!activeStages.includes(opportunity.stage)) continue;
+      const lastChange = latestStageChange.get(opportunity.id) ?? opportunity.created_at;
+      const days = Math.max(0, (now - new Date(lastChange).getTime()) / 86_400_000);
+      const current = agingByStage.get(opportunity.stage) ?? { totalDays: 0, count: 0 };
+      current.totalDays += days;
+      current.count += 1;
+      agingByStage.set(opportunity.stage, current);
+    }
+    const bottleneck = Array.from(agingByStage, ([stage, value]) => ({
+      stage,
+      label: stages.find((item) => item.value === stage)?.label ?? stage,
+      averageDays: value.totalDays / value.count,
+      count: value.count,
+    })).sort((a, b) => b.averageDays - a.averageDays)[0];
+    const salesCycles = cohortWon
+      .filter((opportunity) => opportunity.closed_at)
+      .map(
+        (opportunity) =>
+          Math.max(
+            0,
+            new Date(opportunity.closed_at!).getTime() - new Date(opportunity.created_at).getTime(),
+          ) / 86_400_000,
+      );
     const losses = Array.from(
       (opportunities.data ?? [])
         .filter((opportunity) => {
@@ -541,6 +573,12 @@ function CommercialPage() {
       revenue,
       overdue: overdueTasks.length + overdueDefinedActions.length,
       stale: stale.length,
+      averageSalesCycle:
+        salesCycles.length > 0
+          ? salesCycles.reduce((sum, days) => sum + days, 0) / salesCycles.length
+          : null,
+      salesCycleCount: salesCycles.length,
+      bottleneck: bottleneck ?? null,
       origins,
       stageData,
       losses,
@@ -901,6 +939,39 @@ function CommercialPage() {
               value={formatBRL(dashboard.revenue)}
             />
           </div>
+
+          <section className="panel p-5">
+            <div>
+              <h3 className="font-semibold">Velocidade do funil</h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Mostra se a venda está demorando e onde as negociações estão paradas
+              </p>
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <div className="rounded-lg bg-muted/50 p-4">
+                <p className="text-xs text-muted-foreground">Tempo médio até a venda</p>
+                <p className="mt-2 text-xl font-semibold">
+                  {formatDurationDays(dashboard.averageSalesCycle)}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {dashboard.salesCycleCount
+                    ? `Calculado com ${dashboard.salesCycleCount} ${dashboard.salesCycleCount === 1 ? "venda" : "vendas"}`
+                    : "Será calculado após a primeira venda do período"}
+                </p>
+              </div>
+              <div className="rounded-lg bg-muted/50 p-4">
+                <p className="text-xs text-muted-foreground">Gargalo atual</p>
+                <p className="mt-2 text-xl font-semibold">
+                  {dashboard.bottleneck?.label ?? "Sem negociações ativas"}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {dashboard.bottleneck
+                    ? `${dashboard.bottleneck.count} ${dashboard.bottleneck.count === 1 ? "lead" : "leads"} · média de ${formatDurationDays(dashboard.bottleneck.averageDays).toLocaleLowerCase("pt-BR")}`
+                    : "Nenhuma etapa precisa de atenção agora"}
+                </p>
+              </div>
+            </div>
+          </section>
 
           <div className="grid gap-5 xl:grid-cols-2">
             <Breakdown title="Etapas atuais dos leads do período" items={dashboard.stageData} />
