@@ -1945,12 +1945,29 @@ function CloseSaleDialog({
       return data ?? [];
     },
   });
+  const pixAccounts = (financialAccounts.data ?? []).filter((account) =>
+    ["Banco do Brasil", "Nubank CNPJ", "Nubank PF"].includes(account.name),
+  );
 
   useEffect(() => {
-    if (!form.account_id && financialAccounts.data?.[0]) {
-      setForm((current) => ({ ...current, account_id: financialAccounts.data![0]!.id }));
+    const accounts = financialAccounts.data ?? [];
+    if (form.payment_method === "cartao_credito") {
+      const nubankCnpj = accounts.find((account) => account.name === "Nubank CNPJ");
+      if (nubankCnpj && form.account_id !== nubankCnpj.id) {
+        setForm((current) => ({ ...current, account_id: nubankCnpj.id }));
+      }
+      return;
     }
-  }, [financialAccounts.data, form.account_id]);
+    if (form.payment_method === "pix") {
+      const allowedAccounts = accounts.filter((account) =>
+        ["Banco do Brasil", "Nubank CNPJ", "Nubank PF"].includes(account.name),
+      );
+      const selectedIsAllowed = allowedAccounts.some((account) => account.id === form.account_id);
+      if (!selectedIsAllowed && allowedAccounts[0]) {
+        setForm((current) => ({ ...current, account_id: allowedAccounts[0]!.id }));
+      }
+    }
+  }, [financialAccounts.data, form.account_id, form.payment_method]);
 
   const selectedPlan = plans.find((plan) => plan.id === form.plan_id);
   const grossAmount = selectedPlan ? Number(selectedPlan.card_total) : 0;
@@ -2062,6 +2079,8 @@ function CloseSaleDialog({
     if (!form.settlement_date) return setFormError("Informe a data prevista do repasse.");
     if (form.payment_method === "pix" && !form.account_id)
       return setFormError("Selecione a conta que recebeu o Pix.");
+    if (form.payment_method === "cartao_credito" && !form.account_id)
+      return setFormError("A conta Nubank CNPJ não foi encontrada.");
     if (Number(form.card_fee_percent) < 0 || Number(form.anticipation_fee_percent) < 0)
       return setFormError("As taxas não podem ser negativas.");
     if (Number(form.down_payment) < 0)
@@ -2254,6 +2273,12 @@ function CloseSaleDialog({
                 Preencha somente quando houver cobrança adicional para antecipar o repasse.
               </p>
             </Field>
+            <Field label="Conta do repasse">
+              <Input value="Nubank CNPJ" disabled />
+              <p className="mt-1 text-xs text-muted-foreground">
+                Os repasses de cartão serão vinculados automaticamente a esta conta.
+              </p>
+            </Field>
           </>
         ) : (
           <Field label="Data prevista do recebimento">
@@ -2269,7 +2294,7 @@ function CloseSaleDialog({
             <Select
               value={form.account_id}
               onValueChange={(value) => setForm({ ...form, account_id: value })}
-              disabled={financialAccounts.isLoading || financialAccounts.data?.length === 0}
+              disabled={financialAccounts.isLoading || pixAccounts.length === 0}
             >
               <SelectTrigger>
                 <SelectValue
@@ -2281,7 +2306,7 @@ function CloseSaleDialog({
                 />
               </SelectTrigger>
               <SelectContent>
-                {(financialAccounts.data ?? []).map((account) => (
+                {pixAccounts.map((account) => (
                   <SelectItem key={account.id} value={account.id}>
                     {account.name}
                   </SelectItem>
@@ -2366,7 +2391,7 @@ function CloseSaleDialog({
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm font-semibold">Previsão dos repasses ao consultório</p>
                 <p className="text-xs text-muted-foreground">
-                  {form.payment_method === "pix"
+                  {form.payment_method === "pix" || form.payment_method === "cartao_credito"
                     ? `Conta: ${financialAccounts.data?.find((account) => account.id === form.account_id)?.name ?? "não selecionada"}`
                     : "Conta financeira será definida na baixa"}
                 </p>
