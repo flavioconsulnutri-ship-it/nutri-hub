@@ -1935,6 +1935,7 @@ function CloseSaleDialog({
   const financialAccounts = useQuery({
     queryKey: ["active-financial-accounts"],
     queryFn: async () => {
+      await seedCatalog();
       const { data, error } = await supabase
         .from("financial_accounts")
         .select("id, name")

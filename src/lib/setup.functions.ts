@@ -37,16 +37,17 @@ export const seedCatalog = createServerFn({ method: "POST" })
       created.plans = defaultPlans.length;
     }
 
-    const { data: existingAccounts } = await supabase
-      .from("financial_accounts")
-      .select("id")
-      .limit(1);
-    if ((existingAccounts ?? []).length === 0) {
+    const { data: existingAccounts } = await supabase.from("financial_accounts").select("name");
+    const existingAccountNames = new Set((existingAccounts ?? []).map((account) => account.name));
+    const missingAccounts = defaultAccounts.filter(
+      (account) => !existingAccountNames.has(account.name),
+    );
+    if (missingAccounts.length > 0) {
       const { error } = await supabase
         .from("financial_accounts")
-        .insert(defaultAccounts.map((a) => ({ ...a, org_id: orgId })));
+        .insert(missingAccounts.map((account) => ({ ...account, org_id: orgId })));
       if (error) throw new Error(`Contas: ${error.message}`);
-      created.accounts = defaultAccounts.length;
+      created.accounts = missingAccounts.length;
     }
 
     const { data: existingCategories } = await supabase.from("categories").select("id").limit(1);
