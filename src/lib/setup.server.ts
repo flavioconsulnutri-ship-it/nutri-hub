@@ -191,7 +191,8 @@ export type AccountSeed = {
 
 export const defaultAccounts: AccountSeed[] = [
   { name: "Banco do Brasil", account_type: "banco", initial_balance: 0 },
-  { name: "Nubank", account_type: "banco", initial_balance: 0 },
+  { name: "Nubank PF", account_type: "banco", initial_balance: 0 },
+  { name: "Nubank CNPJ", account_type: "banco", initial_balance: 0 },
   { name: "Conta bancária principal", account_type: "banco", initial_balance: 0 },
   { name: "Recebimentos por cartão", account_type: "cartao", initial_balance: 0 },
   { name: "Dinheiro em espécie", account_type: "dinheiro", initial_balance: 0 },

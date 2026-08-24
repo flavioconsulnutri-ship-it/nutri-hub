@@ -37,8 +37,19 @@ export const seedCatalog = createServerFn({ method: "POST" })
       created.plans = defaultPlans.length;
     }
 
-    const { data: existingAccounts } = await supabase.from("financial_accounts").select("name");
-    const existingAccountNames = new Set((existingAccounts ?? []).map((account) => account.name));
+    const { data: existingAccounts } = await supabase.from("financial_accounts").select("id, name");
+    const accountRows = existingAccounts ?? [];
+    const genericNubank = accountRows.find((account) => account.name === "Nubank");
+    const hasNubankPf = accountRows.some((account) => account.name === "Nubank PF");
+    if (genericNubank && !hasNubankPf) {
+      const { error } = await supabase
+        .from("financial_accounts")
+        .update({ name: "Nubank PF" })
+        .eq("id", genericNubank.id);
+      if (error) throw new Error(`Conta Nubank: ${error.message}`);
+      genericNubank.name = "Nubank PF";
+    }
+    const existingAccountNames = new Set(accountRows.map((account) => account.name));
     const missingAccounts = defaultAccounts.filter(
       (account) => !existingAccountNames.has(account.name),
     );
